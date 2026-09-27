@@ -301,24 +301,32 @@ impl App {
             RESET_FLOW_HEIGHT
         };
         let inner = widgets::dialog_frame(frame, "Reset", theme::DIALOG_WIDE, height);
+        let mut context = vec![Line::from(vec![
+            Span::styled("Current branch  ", theme::hint()),
+            Span::styled(flow.current_branch.clone(), theme::accent_bold()),
+            Span::styled("    HEAD  ", theme::hint()),
+            Span::styled(short_commit(&flow.current_head), theme::accent_bold()),
+        ])];
+        if flow.step == ResetStep::Mode
+            && let Some(target) = flow.selected_target()
+        {
+            context.push(Line::from(vec![
+                Span::styled("Target  ", theme::hint()),
+                Span::styled(short_commit(&target.commit), theme::accent_bold()),
+                Span::raw(" · "),
+                Span::styled(target.name.clone(), theme::accent_bold()),
+            ]));
+        }
         let regions = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
+                Constraint::Length(context.len() as u16),
                 Constraint::Min(5),
                 Constraint::Length(1),
                 Constraint::Length(3),
             ])
             .split(inner);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Current branch  ", theme::hint()),
-                Span::styled(flow.current_branch.clone(), theme::accent_bold()),
-                Span::styled("    HEAD  ", theme::hint()),
-                Span::styled(short_commit(&flow.current_head), theme::accent_bold()),
-            ])),
-            regions[0],
-        );
+        frame.render_widget(Paragraph::new(context), regions[0]);
 
         flow.list_area = Rect::default();
         match flow.step {

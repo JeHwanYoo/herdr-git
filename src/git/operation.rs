@@ -19,6 +19,10 @@ impl ResetMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitOperation {
+    DiscardTrackedChanges {
+        head: String,
+    },
+    DiscardUnstagedPaths(Vec<String>),
     StageAll,
     StagePath(String),
     StagePaths(Vec<String>),
@@ -70,6 +74,19 @@ pub enum GitOperation {
 impl GitOperation {
     pub fn args(&self) -> Vec<String> {
         match self {
+            Self::DiscardTrackedChanges { head } => vec![
+                "restore".into(),
+                format!("--source={head}"),
+                "--staged".into(),
+                "--worktree".into(),
+                "--".into(),
+                ".".into(),
+            ],
+            Self::DiscardUnstagedPaths(paths) => {
+                let mut args = strings(&["--literal-pathspecs", "restore", "--worktree", "--"]);
+                args.extend(paths.iter().cloned());
+                args
+            }
             Self::StageAll => strings(&["add", "--all"]),
             Self::StagePath(path) => {
                 vec!["add".into(), "--all".into(), "--".into(), path.clone()]
@@ -182,6 +199,11 @@ impl Repository {
     }
 
     pub fn execute(&self, operation: &GitOperation) -> Result<String, String> {
+        if let GitOperation::DiscardTrackedChanges { head } = operation
+            && git(&self.root, &["rev-parse", "HEAD"])?.trim() != head
+        {
+            return Err("Discard stopped because HEAD changed. Refresh and try again.".into());
+        }
         if let GitOperation::Push { remote, branch, .. } = operation {
             let current = git(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
             if current.trim() != branch {
@@ -211,6 +233,11 @@ impl Repository {
                         .to_owned(),
                 );
             }
+        }
+        if let GitOperation::DiscardUnstagedPaths(paths) = operation
+            && paths.is_empty()
+        {
+            return Err("No tracked unstaged files selected.".into());
         }
         let args = match operation {
             GitOperation::UnstageAll if !self.has_head() => {
@@ -248,13 +275,309 @@ impl Repository {
             (true, true) => "Git completed without output.".to_owned(),
         };
         if output.status.success() {
+            if let GitOperation::DiscardTrackedChanges { head } = operation {
+                let remaining = git(
+                    &self.root,
+                    &[
+                        "diff",
+                        "--name-only",
+                        "--ignore-submodules=dirty",
+                        head,
+                        "--",
+                    ],
+                )?;
+                let staged = git(&self.root, &["diff", "--cached", "--name-only", head, "--"])?;
+                if !remaining.trim().is_empty() || !staged.trim().is_empty() {
+                    return Err(format!(
+                        "Discard incomplete. Tracked changes remain. Filename case collisions require a case-sensitive filesystem; concurrent edits can also leave changes.\nSome files may already have been restored. Review the file list.\n\n{remaining}{staged}"
+                    ));
+                }
+            }
+            if let GitOperation::DiscardUnstagedPaths(paths) = operation {
+                let mut args = strings(&[
+                    "--literal-pathspecs",
+                    "diff",
+                    "--name-only",
+                    "--ignore-submodules=dirty",
+                    "--",
+                ]);
+                args.extend(paths.iter().cloned());
+                let result = git_owned_output(&self.root, &args)?;
+                if !result.status.success() {
+                    return Err(
+                        "Could not verify the discard result. Review the refreshed file list."
+                            .into(),
+                    );
+                }
+                if !result.stdout.is_empty() {
+                    return Err(format!(
+                        "Discard incomplete. Changes remain. Check for filename case collisions or concurrent edits. Some files may already have been restored.\n\n{}",
+                        String::from_utf8_lossy(&result.stdout)
+                    ));
+                }
+            }
+            self.verify_staging(operation)?;
             Ok(message)
         } else {
             Err(message)
         }
     }
 
+    fn verify_staging(&self, operation: &GitOperation) -> Result<(), String> {
+        let (stage, paths) = match operation {
+            GitOperation::StageAll => (true, &[][..]),
+            GitOperation::StagePath(path) => (true, std::slice::from_ref(path)),
+            GitOperation::StagePaths(paths) => (true, paths.as_slice()),
+            GitOperation::UnstageAll => (false, &[][..]),
+            GitOperation::UnstagePath(path) => (false, std::slice::from_ref(path)),
+            GitOperation::UnstagePaths(paths) => (false, paths.as_slice()),
+            _ => return Ok(()),
+        };
+        let read_paths = |mut args: Vec<String>| -> Result<Vec<String>, String> {
+            args.push("--".into());
+            args.extend(paths.iter().cloned());
+            let output = git_owned_output(&self.root, &args)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Could not verify the index update: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect())
+        };
+        let mut args = strings(&["diff", "--name-only", "-z", "--ignore-submodules=dirty"]);
+        if !stage {
+            args.push("--cached".into());
+        }
+        let mut remaining = read_paths(args)?;
+        if stage {
+            remaining.extend(read_paths(strings(&[
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ]))?);
+        }
+        remaining.sort();
+        remaining.dedup();
+        if remaining.is_empty() {
+            return Ok(());
+        }
+        let state = if stage { "unstaged" } else { "staged" };
+        let mut message = format!(
+            "Git completed, but {} requested paths remain {state}:\n{}",
+            remaining.len(),
+            remaining
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        if remaining.len() > 20 {
+            message.push_str(&format!("\n... and {} more", remaining.len() - 20));
+        }
+        message.push_str(
+            "\nThe operation may have applied partially. Review the refreshed file list.",
+        );
+        if stage {
+            message.push_str("\nCheck for concurrent file edits or filename case collisions. Case-colliding files require a case-sensitive filesystem.");
+        }
+        Err(message)
+    }
+
     fn has_head(&self) -> bool {
         git(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn repository(name: &str) -> Repository {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("herdr-staging-{name}-{unique}"));
+        fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.name", "Test Author"]).unwrap();
+        git(&root, &["config", "user.email", "test@example.com"]).unwrap();
+        Repository::at_root(root)
+    }
+
+    #[test]
+    fn discard_unstaged_preserves_index_and_other_files_with_literal_paths() {
+        let repository = repository("discard-unstaged");
+        let root = repository.root();
+        for path in ["[file].txt", "f.txt"] {
+            fs::write(root.join(path), "base\n").unwrap();
+        }
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-m", "Base"]).unwrap();
+        fs::write(root.join("[file].txt"), "staged\n").unwrap();
+        git(root, &["--literal-pathspecs", "add", "--", "[file].txt"]).unwrap();
+        let index = git(root, &["write-tree"]).unwrap();
+        fs::write(root.join("[file].txt"), "unstaged\n").unwrap();
+        fs::write(root.join("f.txt"), "keep other edits\n").unwrap();
+        fs::write(root.join("new.txt"), "keep new file\n").unwrap();
+        repository
+            .execute(&GitOperation::DiscardUnstagedPaths(vec![
+                "[file].txt".into(),
+            ]))
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("[file].txt")).unwrap(),
+            "staged\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("f.txt")).unwrap(),
+            "keep other edits\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("new.txt")).unwrap(),
+            "keep new file\n"
+        );
+        assert_eq!(git(root, &["write-tree"]).unwrap(), index);
+        assert!(
+            repository
+                .execute(&GitOperation::DiscardUnstagedPaths(Vec::new()))
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discard_restores_tracked_changes_keeps_untracked_and_rejects_stale_head() {
+        let repository = repository("discard");
+        let root = repository.root();
+        for path in ["staged.txt", "unstaged.txt", "deleted.txt"] {
+            fs::write(root.join(path), "original\n").unwrap();
+        }
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-m", "Base"]).unwrap();
+        let head = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        fs::write(root.join("staged.txt"), "staged change\n").unwrap();
+        fs::write(root.join("added.txt"), "staged addition\n").unwrap();
+        git(root, &["add", "staged.txt", "added.txt"]).unwrap();
+        fs::write(root.join("unstaged.txt"), "unstaged change\n").unwrap();
+        fs::write(root.join("untracked.txt"), "keep me\n").unwrap();
+        fs::remove_file(root.join("deleted.txt")).unwrap();
+        let error = repository
+            .execute(&GitOperation::DiscardTrackedChanges {
+                head: "stale-head".into(),
+            })
+            .unwrap_err();
+        assert!(error.contains("HEAD changed"));
+        assert_eq!(
+            fs::read_to_string(root.join("unstaged.txt")).unwrap(),
+            "unstaged change\n"
+        );
+        repository
+            .execute(&GitOperation::DiscardTrackedChanges { head: head.clone() })
+            .unwrap();
+        for path in ["staged.txt", "unstaged.txt", "deleted.txt"] {
+            assert_eq!(fs::read_to_string(root.join(path)).unwrap(), "original\n");
+        }
+        assert!(!root.join("added.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("untracked.txt")).unwrap(),
+            "keep me\n"
+        );
+        assert_eq!(git(root, &["rev-parse", "HEAD"]).unwrap().trim(), head);
+        assert!(git(root, &["diff", "--name-only"]).unwrap().is_empty());
+        assert!(
+            git(root, &["diff", "--cached", "--name-only"])
+                .unwrap()
+                .is_empty()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staging_verification_checks_only_requested_paths_and_supports_unborn_head() {
+        let repository = repository("verify");
+        let root = repository.root();
+        fs::write(root.join("selected.txt"), "selected\n").unwrap();
+        fs::write(root.join("other.txt"), "other\n").unwrap();
+        let stage = GitOperation::StagePath("selected.txt".into());
+        let error = repository.verify_staging(&stage).unwrap_err();
+        assert!(error.contains("selected.txt"));
+        assert!(!error.contains("other.txt"));
+        repository.execute(&stage).unwrap();
+        repository.verify_staging(&stage).unwrap();
+        assert!(repository.verify_staging(&GitOperation::StageAll).is_err());
+        let unstage = GitOperation::UnstagePath("selected.txt".into());
+        assert!(repository.verify_staging(&unstage).is_err());
+        repository.execute(&unstage).unwrap();
+        repository.verify_staging(&unstage).unwrap();
+        repository.execute(&GitOperation::StageAll).unwrap();
+        git(root, &["commit", "-m", "Base"]).unwrap();
+        fs::write(root.join("selected.txt"), "changed\n").unwrap();
+        fs::remove_file(root.join("other.txt")).unwrap();
+        repository.execute(&stage).unwrap();
+        assert!(repository.verify_staging(&GitOperation::StageAll).is_err());
+        repository.execute(&GitOperation::StageAll).unwrap();
+        repository.verify_staging(&GitOperation::StageAll).unwrap();
+        repository.execute(&GitOperation::UnstageAll).unwrap();
+        repository
+            .verify_staging(&GitOperation::UnstageAll)
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn case_colliding_paths_do_not_report_false_staging_success() {
+        let repository = repository("case-collision");
+        let root = repository.root();
+        fs::write(root.join("FILE.txt"), "upper\n").unwrap();
+        let case_sensitive = !root.join("file.txt").exists();
+        let upper = git(root, &["hash-object", "-w", "FILE.txt"]).unwrap();
+        fs::write(root.join("file.txt"), "lower\n").unwrap();
+        let lower = git(root, &["hash-object", "-w", "file.txt"]).unwrap();
+        for (path, blob) in [("FILE.txt", upper.trim()), ("file.txt", lower.trim())] {
+            git(
+                root,
+                &["update-index", "--add", "--cacheinfo", "100644", blob, path],
+            )
+            .unwrap();
+        }
+        git(root, &["commit", "-m", "Case-sensitive tree"]).unwrap();
+        fs::write(root.join("independent.txt"), "new file\n").unwrap();
+        if case_sensitive {
+            fs::write(root.join("FILE.txt"), "changed upper\n").unwrap();
+        }
+        for operation in [
+            GitOperation::StageAll,
+            GitOperation::StagePath("FILE.txt".into()),
+            GitOperation::StagePaths(vec!["FILE.txt".into(), "file.txt".into()]),
+        ] {
+            let result = repository.execute(&operation);
+            if case_sensitive {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("remain unstaged"), "{error}");
+                assert!(error.contains("FILE.txt"), "{error}");
+                assert!(error.contains("case-sensitive filesystem"), "{error}");
+            }
+        }
+        let staged = git(root, &["diff", "--cached", "--name-only"]).unwrap();
+        assert!(staged.contains("independent.txt"));
+        let head = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        let result = repository.execute(&GitOperation::DiscardTrackedChanges { head });
+        if case_sensitive {
+            result.unwrap();
+        } else {
+            assert!(result.unwrap_err().contains("Discard incomplete"));
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

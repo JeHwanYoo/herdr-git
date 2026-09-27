@@ -1182,11 +1182,42 @@ impl App {
             GitOperation::Push { force, .. } => Some(*force),
             _ => None,
         };
+        let commit_label = |target: &str| {
+            self.graph
+                .commits
+                .iter()
+                .find(|commit| commit.sha == target)
+                .map(|commit| {
+                    format!(
+                        "{} · {}",
+                        super::graph::short_commit(target),
+                        commit.subject
+                    )
+                })
+                .unwrap_or_else(|| target.to_owned())
+        };
+        let has_commit_context = matches!(
+            operation,
+            GitOperation::CheckoutCommit(_)
+                | GitOperation::CheckoutBranch(_)
+                | GitOperation::CherryPick(_)
+                | GitOperation::Revert(_)
+                | GitOperation::RebaseHere(_)
+                | GitOperation::InteractiveRebaseOnto(_)
+                | GitOperation::InteractiveRebase(_)
+        );
         let inner = widgets::dialog_frame(
             frame,
             "Confirm Git operation",
             theme::DIALOG_MEDIUM,
-            CONFIRMATION_HEIGHT + 2 * u16::from(force.is_some()),
+            CONFIRMATION_HEIGHT
+                + 2 * u16::from(force.is_some())
+                + 3 * u16::from(has_commit_context)
+                + 6 * u16::from(matches!(
+                    operation,
+                    GitOperation::DiscardTrackedChanges { .. }
+                        | GitOperation::DiscardUnstagedPaths(_)
+                )),
         );
         let regions = Layout::default()
             .direction(Direction::Vertical)
@@ -1199,6 +1230,25 @@ impl App {
             ])
             .split(inner);
         let description = match operation {
+            GitOperation::DiscardUnstagedPaths(paths) => format!(
+                "Discard unstaged changes in {} tracked files?\nRestore from: index (staged content)\nStaged changes and untracked files are kept.\n\nUnstaged edits will be permanently lost.\n\n{}{}",
+                paths.len(),
+                paths.iter().take(5).cloned().collect::<Vec<_>>().join("\n"),
+                if paths.len() > 5 {
+                    format!("\n... and {} more", paths.len() - 5)
+                } else {
+                    String::new()
+                }
+            ),
+            GitOperation::DiscardTrackedChanges { head } => format!(
+                "Repository: {}\nRestore to HEAD: {}\n\nDiscard ALL staged and unstaged changes to tracked files?\nUntracked files are kept. Submodule working trees are not restored.\n\nThis permanently deletes uncommitted tracked-file changes.\nFilename case collisions may prevent a clean working tree.\n\n{}",
+                self.repository
+                    .as_ref()
+                    .map(|repo| repo.root().display().to_string())
+                    .unwrap_or_default(),
+                head,
+                operation.preview()
+            ),
             GitOperation::PullFastForward | GitOperation::Push { .. } => format!(
                 "Branch: {}\n\n{}\n\n{}",
                 self.ops
@@ -1214,6 +1264,33 @@ impl App {
                 }
             ),
 
+            GitOperation::CheckoutCommit(target) => format!(
+                "Checkout target: {}\n\n{}\n\nChecks out this commit with a detached HEAD.",
+                commit_label(target),
+                operation.preview()
+            ),
+            GitOperation::CheckoutBranch(branch) => format!(
+                "Checkout branch: {branch}\n\n{}\n\nSwitches the working tree to this branch.",
+                operation.preview()
+            ),
+            GitOperation::CherryPick(target) | GitOperation::Revert(target) => {
+                let branch = self
+                    .ops
+                    .command_context
+                    .current_branch
+                    .as_deref()
+                    .unwrap_or("detached HEAD");
+                let label = if matches!(operation, GitOperation::CherryPick(_)) {
+                    "Commit to apply"
+                } else {
+                    "Commit to revert"
+                };
+                format!(
+                    "Current branch: {branch}\n{label}: {}\n\n{}\n\nConflicts are left intact for recovery.",
+                    commit_label(target),
+                    operation.preview()
+                )
+            }
             GitOperation::RebaseHere(target)
             | GitOperation::InteractiveRebaseOnto(target)
             | GitOperation::InteractiveRebase(target) => {
@@ -1227,8 +1304,14 @@ impl App {
                     .strip_prefix("refs/heads/")
                     .or_else(|| target.strip_prefix("refs/remotes/"))
                     .unwrap_or(target);
+                let label = if matches!(operation, GitOperation::InteractiveRebase(_)) {
+                    "Rewrite from (inclusive)"
+                } else {
+                    "Rebase onto"
+                };
                 format!(
-                    "Branch: {branch}\nTarget: {target}\n\n{}\n\nRewrites commit history.",
+                    "Branch: {branch}\n{label}: {}\n\n{}\n\nRewrites commit history.",
+                    commit_label(target),
                     operation.preview()
                 )
             }
@@ -2265,6 +2348,36 @@ mod tests {
         assert!(!text.contains("Force with lease"), "{text}");
         press(&mut app, KeyCode::Char(' '));
         assert!(matches!(app.overlay, Overlay::Confirm { .. }));
+    }
+
+    #[test]
+    fn discard_requires_confirmation_and_escape_preserves_changes() {
+        let (root, mut app) = crate::ui::test_support::committed_change("discard-dialog");
+        app.dispatch_command(CommandId::DiscardTrackedChanges);
+        assert!(matches!(app.overlay, Overlay::Confirm { .. }));
+        assert!(app.foreground.action.is_none());
+        let screen = buffer_text(&render(&mut app, 120, 32));
+        assert!(screen.contains("Restore to HEAD:"));
+        assert!(screen.contains("ALL staged and unstaged"));
+        assert!(screen.contains("Untracked files are kept"));
+        assert!(screen.contains("permanently deletes"));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "one\ntwo changed\nthree\n"
+        );
+        app.dispatch_command(CommandId::DiscardTrackedChanges);
+        let (requests, _results) = crate::ui::test_support::intercept_foreground(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            ForegroundRequest::Operation {
+                operation: GitOperation::DiscardTrackedChanges { .. },
+                ..
+            }
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

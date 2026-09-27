@@ -34,7 +34,7 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 
 | Feature | What you can do |
 | --- | --- |
-| Changes | Review changed files and stage or unstage them |
+| Changes | Review changed files, stage or unstage them, and discard tracked changes |
 | Diffs | View changes side by side and compare commits or branches |
 | Graph | Browse and filter commit history |
 | Blame & Line History | See who changed selected lines and review their history |
