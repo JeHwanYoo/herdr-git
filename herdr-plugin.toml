@@ -1,0 +1,21 @@
+id = "io.github.jehwanyoo.herdr-git"
+name = "Herdr Git"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Git history, diffs, blame, and repository operations in a Herdr pane"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release", "--locked"]
+
+[[actions]]
+id = "open"
+title = "Toggle Git pane"
+contexts = ["workspace"]
+command = ["target/release/herdr-git", "open-pane"]
+
+[[panes]]
+id = "git"
+title = "Git"
+placement = "split"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-git\""]
