@@ -7,6 +7,7 @@ pub(in crate::ui) enum CommandId {
     AddProject,
     RemoveProject,
     ResetCurrentBranch,
+    DiscardTrackedChanges,
     Fetch,
     Pull,
     Commit,
@@ -28,7 +29,7 @@ pub(in crate::ui) enum CommandId {
     CopySha,
 }
 
-pub(in crate::ui) const COMMANDS: [CommandId; 17] = [
+pub(in crate::ui) const COMMANDS: [CommandId; 18] = [
     CommandId::Refresh,
     CommandId::SwitchRepository,
     CommandId::AddRemote,
@@ -44,6 +45,7 @@ pub(in crate::ui) const COMMANDS: [CommandId; 17] = [
     CommandId::CherryPick,
     CommandId::Revert,
     CommandId::ResetCurrentBranch,
+    CommandId::DiscardTrackedChanges,
     CommandId::CopySha,
     CommandId::Stash,
 ];
@@ -151,6 +153,9 @@ impl GitOperation {
             }
             Self::CherryPick(_) => Some(CommandId::CherryPick),
             Self::Revert(_) => Some(CommandId::Revert),
+            Self::DiscardTrackedChanges { .. } | Self::DiscardUnstagedPaths(_) => {
+                Some(CommandId::DiscardTrackedChanges)
+            }
             Self::Reset { .. } => Some(CommandId::ResetCurrentBranch),
             Self::StageAll
             | Self::StagePath(_)
@@ -170,6 +175,7 @@ impl CommandId {
             Self::AddProject => "Add Project…",
             Self::RemoveProject => "Remove Project",
             Self::ResetCurrentBranch => "Reset…",
+            Self::DiscardTrackedChanges => "Discard all tracked changes…",
             Self::Fetch => "Fetch",
             Self::Pull => "Pull",
             Self::Commit => "Commit…",
@@ -210,6 +216,16 @@ impl CommandId {
                 reason: None,
             },
             _ if !context.has_repository => disabled("not a Git repository"),
+            Self::DiscardTrackedChanges if context.head_commit.is_none() => {
+                disabled("no HEAD commit to restore")
+            }
+            Self::DiscardTrackedChanges if !context.has_changes => {
+                disabled("working tree is clean")
+            }
+            Self::DiscardTrackedChanges => Availability {
+                enabled: true,
+                reason: None,
+            },
             Self::ResetCurrentBranch if context.current_branch.is_none() => {
                 disabled("checkout a branch before resetting")
             }
@@ -292,6 +308,7 @@ impl CommandId {
             Self::Revert => "Revert",
             Self::CopySha => "Copy SHA",
             Self::ResetCurrentBranch => "Reset",
+            Self::DiscardTrackedChanges => "Discard changes",
             Self::Pull => "Pull",
             Self::Commit => "Commit",
             Self::InteractiveRebase => "Interactive rebase",
@@ -361,6 +378,12 @@ impl CommandId {
     ) -> Result<GitOperation, &'static str> {
         let commit = || context.selected_commit.clone().ok_or("no commit selected");
         match self {
+            Self::DiscardTrackedChanges => Ok(GitOperation::DiscardTrackedChanges {
+                head: context
+                    .head_commit
+                    .clone()
+                    .ok_or("no HEAD commit to restore")?,
+            }),
             Self::Fetch => Ok(GitOperation::Fetch),
             Self::Pull => Ok(GitOperation::PullFastForward),
             Self::Commit => Err("commit message input is required"),
@@ -447,6 +470,7 @@ mod tests {
                 "Cherry-pick…",
                 "Revert…",
                 "Reset…",
+                "Discard all tracked changes…",
                 "Copy SHA…",
                 "Stash…"
             ]

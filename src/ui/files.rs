@@ -370,6 +370,42 @@ impl App {
         self.rebuild_tree();
     }
 
+    fn tree_discard_paths(&self, row: usize) -> Option<Vec<String>> {
+        let row = self.files.tree_rows.get(row)?;
+        let paths = match row.kind {
+            TreeRowKind::Directory {
+                section: Some(ChangeSection::Unstaged),
+                ..
+            } => self
+                .files
+                .changes
+                .iter()
+                .filter(|change| change.section == ChangeSection::Unstaged && change.status != "??")
+                .map(|change| change.path.clone())
+                .collect::<Vec<_>>(),
+            TreeRowKind::File { change_index } => {
+                let change = self.files.changes.get(change_index)?;
+                if change.section != ChangeSection::Unstaged || change.status == "??" {
+                    return None;
+                }
+                vec![change.path.clone()]
+            }
+            _ => return None,
+        };
+        (!paths.is_empty()).then_some(paths)
+    }
+
+    fn tree_discard_action_at(&self, row: usize, column: u16) -> Option<Vec<String>> {
+        let area = staging_overlay_area(
+            self.files.list_area,
+            row.checked_sub(self.files.tree_scroll)?,
+        )?;
+        if area.x < self.files.list_area.x + 3 || !(area.x - 3..area.x).contains(&column) {
+            return None;
+        }
+        self.tree_discard_paths(row)
+    }
+
     fn tree_staging_action_at(&self, row: usize, column: u16) -> Option<GitOperation> {
         let operation =
             staging_operation_for_row(self.files.tree_rows.get(row)?, &self.files.changes)?;
@@ -753,11 +789,26 @@ impl App {
                 self.focus = PaneFocus::Files;
                 self.clear_selection();
                 let left = button == MouseButton::Left;
+                let discard = left
+                    .then(|| self.tree_discard_action_at(row, mouse.column))
+                    .flatten();
                 let staging = left
                     .then(|| self.tree_staging_action_at(row, mouse.column))
                     .flatten();
                 self.select_tree(row.min(self.files.tree_rows.len().saturating_sub(1)));
-                if let Some(operation) = staging {
+                if let Some(paths) = discard {
+                    self.files.tree_drag_anchor = None;
+                    if self.foreground.action.is_some() {
+                        self.show_action_error("Wait for the current Git operation.");
+                    } else {
+                        self.overlay = Overlay::Confirm {
+                            command: super::commands::CommandId::DiscardTrackedChanges,
+                            operation: GitOperation::DiscardUnstagedPaths(paths),
+                            buttons: ConfirmButtons::default(),
+                            push_controls: Default::default(),
+                        };
+                    }
+                } else if let Some(operation) = staging {
                     self.files.tree_drag_anchor = None;
                     self.run_staging_operation(operation);
                 } else if left {
@@ -927,7 +978,18 @@ impl App {
             && let Some((label, style)) = staging_overlay(&operation, true)
         {
             frame.render_widget(Paragraph::new(label).style(style), overlay_area);
-            if matches!(
+            if self.tree_discard_paths(row_index).is_some() && overlay_area.x >= inner.x + 3 {
+                let area = Rect::new(overlay_area.x - 3, overlay_area.y, 3, 1);
+                frame.render_widget(
+                    Paragraph::new(" ↶ ").style(
+                        Style::default()
+                            .fg(theme::TEXT_INVERSE)
+                            .bg(theme::WARNING)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    area,
+                );
+            } else if matches!(
                 self.diff.diff_target,
                 crate::git::DiffTarget::WorkingTreeAgainstRevision { .. }
             ) && overlay_area.x >= inner.x + 3
@@ -1258,6 +1320,54 @@ mod tests {
             .enumerate()
             .filter_map(|(row, item)| matches!(item.kind, TreeRowKind::File { .. }).then_some(row))
             .collect()
+    }
+
+    #[test]
+    fn discard_icon_sits_beside_stage_and_requires_confirmation() {
+        let (root, mut app) = crate::ui::test_support::committed_change("discard-icon");
+        render(&mut app, 120, 32);
+        let file = file_rows(&app)[0];
+        for row in [0, file] {
+            let area =
+                super::staging_overlay_area(app.files.list_area, row - app.files.tree_scroll)
+                    .unwrap();
+            app.shell.mouse_position = Some((area.x - 2, area.y));
+            let buffer = render(&mut app, 120, 32);
+            assert_eq!(buffer[(area.x - 2, area.y)].symbol(), "↶");
+            assert_eq!(buffer[(area.x + 1, area.y)].symbol(), "+");
+            click(&mut app, area.x - 2, area.y);
+            assert_eq!(
+                app.overlay.confirm_operation(),
+                Some(&GitOperation::DiscardUnstagedPaths(vec![
+                    "tracked.txt".into()
+                ]))
+            );
+            assert!(app.foreground.action.is_none());
+            let screen = buffer_text(&render(&mut app, 120, 32));
+            assert!(screen.contains("Restore from: index"));
+            assert!(screen.contains("tracked.txt"));
+            assert!(screen.contains("permanently lost"));
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(
+                fs::read_to_string(root.join("tracked.txt")).unwrap(),
+                "one\ntwo changed\nthree\n"
+            );
+            render(&mut app, 120, 32);
+        }
+        let area =
+            super::staging_overlay_area(app.files.list_area, file - app.files.tree_scroll).unwrap();
+        click(&mut app, area.x - 2, area.y);
+        let (requests, _results) = intercept_foreground(&mut app);
+        assert!(requests.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            ForegroundRequest::Operation {
+                operation: GitOperation::DiscardUnstagedPaths(_),
+                ..
+            }
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
