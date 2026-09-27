@@ -2404,6 +2404,11 @@ mod tests {
             app.overlay.confirm_operation(),
             Some(&GitOperation::CheckoutCommit(selected.clone()))
         );
+        let screen = buffer_text(&render(&mut app, 100, 32));
+        assert!(screen.contains(&format!(
+            "Checkout target: {} · Base",
+            super::short_commit(&selected)
+        )));
         press(&mut app, KeyCode::Esc);
 
         app.run_graph_action(GraphAction::Rebase);
@@ -2414,6 +2419,11 @@ mod tests {
             app.overlay.confirm_operation(),
             Some(&GitOperation::RebaseHere(selected.clone()))
         );
+        let screen = buffer_text(&render(&mut app, 100, 32));
+        assert!(screen.contains(&format!(
+            "Rebase onto: {} · Base",
+            super::short_commit(&selected)
+        )));
         press(&mut app, KeyCode::Esc);
 
         app.run_graph_action(GraphAction::CherryPick);
@@ -2421,12 +2431,22 @@ mod tests {
             app.overlay.confirm_operation(),
             Some(&GitOperation::CherryPick(selected.clone()))
         );
+        let screen = buffer_text(&render(&mut app, 100, 32));
+        assert!(screen.contains(&format!(
+            "Commit to apply: {} · Base",
+            super::short_commit(&selected)
+        )));
         press(&mut app, KeyCode::Esc);
         app.run_graph_action(GraphAction::Revert);
         assert_eq!(
             app.overlay.confirm_operation(),
             Some(&GitOperation::Revert(selected.clone()))
         );
+        let screen = buffer_text(&render(&mut app, 100, 32));
+        assert!(screen.contains(&format!(
+            "Commit to revert: {} · Base",
+            super::short_commit(&selected)
+        )));
         press(&mut app, KeyCode::Esc);
 
         app.run_graph_action(GraphAction::Reset);
@@ -2435,6 +2455,12 @@ mod tests {
         assert!(reset.fixed_target);
         assert_eq!(reset.current_head, current_head);
         assert_eq!(reset.selected_target().unwrap().commit, selected);
+        let screen = buffer_text(&render(&mut app, 100, 32));
+        assert!(screen.contains(&format!(
+            "Target  {} · Base",
+            super::short_commit(&selected)
+        )));
+        assert!(screen.contains(&format!("HEAD  {}", super::short_commit(&current_head))));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.overlay.reset().unwrap().step, ResetStep::Confirm);
         let (request_rx, _result_tx) = super::super::test_support::intercept_foreground(&mut app);

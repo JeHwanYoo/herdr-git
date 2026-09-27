@@ -437,7 +437,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         let screen = crate::ui::test_support::buffer_text(&render(&mut app, 100, 30));
         assert!(screen.contains("Branch: feature"));
-        assert!(screen.contains("Target: main"));
+        assert!(screen.contains("Rebase onto: main"));
         press(&mut app, KeyCode::Enter);
         wait_for_foreground(&mut app);
         wait_for_refresh(&mut app);

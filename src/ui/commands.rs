@@ -1182,11 +1182,37 @@ impl App {
             GitOperation::Push { force, .. } => Some(*force),
             _ => None,
         };
+        let commit_label = |target: &str| {
+            self.graph
+                .commits
+                .iter()
+                .find(|commit| commit.sha == target)
+                .map(|commit| {
+                    format!(
+                        "{} · {}",
+                        super::graph::short_commit(target),
+                        commit.subject
+                    )
+                })
+                .unwrap_or_else(|| target.to_owned())
+        };
+        let has_commit_context = matches!(
+            operation,
+            GitOperation::CheckoutCommit(_)
+                | GitOperation::CheckoutBranch(_)
+                | GitOperation::CherryPick(_)
+                | GitOperation::Revert(_)
+                | GitOperation::RebaseHere(_)
+                | GitOperation::InteractiveRebaseOnto(_)
+                | GitOperation::InteractiveRebase(_)
+        );
         let inner = widgets::dialog_frame(
             frame,
             "Confirm Git operation",
             theme::DIALOG_MEDIUM,
-            CONFIRMATION_HEIGHT + 2 * u16::from(force.is_some()),
+            CONFIRMATION_HEIGHT
+                + 2 * u16::from(force.is_some())
+                + 3 * u16::from(has_commit_context),
         );
         let regions = Layout::default()
             .direction(Direction::Vertical)
@@ -1214,6 +1240,33 @@ impl App {
                 }
             ),
 
+            GitOperation::CheckoutCommit(target) => format!(
+                "Checkout target: {}\n\n{}\n\nChecks out this commit with a detached HEAD.",
+                commit_label(target),
+                operation.preview()
+            ),
+            GitOperation::CheckoutBranch(branch) => format!(
+                "Checkout branch: {branch}\n\n{}\n\nSwitches the working tree to this branch.",
+                operation.preview()
+            ),
+            GitOperation::CherryPick(target) | GitOperation::Revert(target) => {
+                let branch = self
+                    .ops
+                    .command_context
+                    .current_branch
+                    .as_deref()
+                    .unwrap_or("detached HEAD");
+                let label = if matches!(operation, GitOperation::CherryPick(_)) {
+                    "Commit to apply"
+                } else {
+                    "Commit to revert"
+                };
+                format!(
+                    "Current branch: {branch}\n{label}: {}\n\n{}\n\nConflicts are left intact for recovery.",
+                    commit_label(target),
+                    operation.preview()
+                )
+            }
             GitOperation::RebaseHere(target)
             | GitOperation::InteractiveRebaseOnto(target)
             | GitOperation::InteractiveRebase(target) => {
@@ -1227,8 +1280,14 @@ impl App {
                     .strip_prefix("refs/heads/")
                     .or_else(|| target.strip_prefix("refs/remotes/"))
                     .unwrap_or(target);
+                let label = if matches!(operation, GitOperation::InteractiveRebase(_)) {
+                    "Rewrite from (inclusive)"
+                } else {
+                    "Rebase onto"
+                };
                 format!(
-                    "Branch: {branch}\nTarget: {target}\n\n{}\n\nRewrites commit history.",
+                    "Branch: {branch}\n{label}: {}\n\n{}\n\nRewrites commit history.",
+                    commit_label(target),
                     operation.preview()
                 )
             }
