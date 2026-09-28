@@ -5,7 +5,10 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+mod graphics;
 mod sidebar;
+
+pub use graphics::{GraphicsPlacement, GraphicsSurface};
 
 const PLUGIN_ID: &str = "io.github.jehwanyoo.herdr-git";
 const PANE_TITLE: &str = "Git";

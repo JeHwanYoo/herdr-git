@@ -6,6 +6,7 @@ use ratatui::text::Span;
 pub(super) const ACCENT: Color = Color::Cyan;
 pub(super) const MUTED: Color = Color::DarkGray;
 pub(super) const HINT: Color = Color::Rgb(220, 227, 235);
+pub(super) const SECONDARY: Color = Color::Rgb(139, 148, 158);
 pub(super) const ERROR: Color = Color::Red;
 pub(super) const SUCCESS: Color = Color::Green;
 pub(super) const WARNING: Color = Color::Yellow;
@@ -26,7 +27,6 @@ pub(super) const COMMIT_TYPE_COLORS: [(&str, Color); 7] = [
 pub(super) const SURFACE_FOCUS: Color = Color::Rgb(48, 53, 61);
 pub(super) const SURFACE_HOVER: Color = Color::Rgb(38, 58, 82);
 pub(super) const SURFACE_SELECTION: Color = Color::Rgb(52, 74, 110);
-pub(super) const SURFACE_GRAPH_SELECTION: Color = Color::Rgb(10, 94, 200);
 pub(super) const SURFACE_PANEL: Color = Color::Rgb(24, 26, 30);
 pub(super) const SURFACE_HEADER: Color = Color::Rgb(32, 35, 40);
 pub(super) const SURFACE_INERT: Color = Color::Rgb(45, 45, 48);
@@ -41,6 +41,10 @@ pub(super) const GRAPH_LANES: [Color; 6] = [
     Color::Rgb(255, 182, 168),
     Color::Rgb(184, 212, 255),
 ];
+pub(super) fn graph_lane(index: usize) -> Color {
+    GRAPH_LANES[index % GRAPH_LANES.len()]
+}
+
 pub(super) const BADGE_HEAD_BG: Color = Color::Rgb(76, 43, 30);
 pub(super) const BADGE_LOCAL_BG: Color = Color::Rgb(25, 58, 38);
 pub(super) const BADGE_REMOTE_BG: Color = Color::Rgb(20, 44, 68);
@@ -91,6 +95,10 @@ pub(super) fn hover(base: Style, hovered: bool) -> Style {
 
 pub(super) fn hint() -> Style {
     Style::default().fg(HINT)
+}
+
+pub(super) fn secondary() -> Style {
+    Style::default().fg(SECONDARY)
 }
 
 pub(super) fn disabled() -> Style {

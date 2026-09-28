@@ -1986,7 +1986,6 @@ mod tests {
                 refs: Vec::new(),
                 subject: "feat: inspect details".to_owned(),
                 body: String::new(),
-                graph: crate::git::GraphPrefix::plain("*"),
             },
             changes: (0..30)
                 .map(|index| ChangedPath {
@@ -2028,7 +2027,6 @@ mod tests {
                 refs: Vec::new(),
                 subject: "feat: inspect details".to_owned(),
                 body: String::new(),
-                graph: crate::git::GraphPrefix::plain("*"),
             },
             changes: vec![ChangedPath {
                 status: "M".to_owned(),
@@ -2099,7 +2097,6 @@ mod tests {
                 refs: Vec::new(),
                 subject: "feat: inspect details".to_owned(),
                 body: String::new(),
-                graph: crate::git::GraphPrefix::plain("*"),
             },
             changes: paths
                 .iter()
@@ -2498,7 +2495,6 @@ mod tests {
             refs: Vec::new(),
             subject: format!("commit {index}"),
             body: String::new(),
-            graph: crate::git::GraphPrefix::plain("*"),
         };
         let mut cache = DetailsCache::default();
         for index in 0..65 {

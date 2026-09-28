@@ -29,7 +29,7 @@ use effect::{
     BlameTarget, DiffReadTarget, ForegroundResult, KnownFingerprint, RefreshIntent, RefreshProgress,
 };
 use files::FilesState;
-use graph::GraphState;
+use graph::{CurveLayer, GraphState};
 use inspect::InspectState;
 use lanes::{ForegroundLane, RefreshLane};
 use overlay::Overlay;
@@ -116,6 +116,7 @@ pub fn run(path: &Path) -> Result<(), String> {
                 return Ok(());
             }
         };
+        app.curves = CurveLayer::connect();
         let mut dirty = true;
         loop {
             dirty |= app.maybe_auto_refresh();
@@ -124,12 +125,15 @@ pub fn run(path: &Path) -> Result<(), String> {
                 terminal
                     .draw(|frame| app.draw(frame))
                     .map_err(|error| error.to_string())?;
-                dirty = false;
+                dirty = app.present_graph_curves();
                 app.maintenance.enabled = true;
             }
             if event::poll(app.input_poll_timeout()).map_err(|error| error.to_string())? {
                 let next = event::read().map_err(|error| error.to_string())?;
                 dirty = true;
+                if matches!(next, Event::Resize(..)) {
+                    app.curves.reconnect();
+                }
                 let wheel_burst = is_wheel_event(&next);
                 let mut close = app.handle(next)?;
                 if wheel_burst {
@@ -215,6 +219,7 @@ struct App {
     shell: ShellState,
     workspaces: WorkspacesState,
     graph: GraphState,
+    curves: CurveLayer,
     history: history::HistoryLane,
     maintenance: history::MaintenanceLane,
     inspect: InspectState,
@@ -291,6 +296,7 @@ impl App {
             shell: ShellState::new(invoking_path),
             workspaces: WorkspacesState::new(project_registry),
             graph: GraphState::new(Vec::new(), false),
+            curves: CurveLayer::disabled(),
             history: history::HistoryLane::start()?,
             maintenance: history::MaintenanceLane::start()?,
             inspect: InspectState::default(),

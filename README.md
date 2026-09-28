@@ -1,9 +1,6 @@
 # Herdr Git
 
-<p>
-  <img src="assets/git-changes.png" alt="Git changes" width="49%">
-  <img src="assets/git-graph.png" alt="Git graph" width="49%">
-</p>
+![Herdr Git](assets/app.png)
 
 A Git client for Herdr, focused on the essentials.
 
@@ -36,7 +33,7 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 | --- | --- |
 | Changes | Review changed files, stage or unstage them, and discard tracked changes |
 | Diffs | View changes side by side and compare commits or branches |
-| Graph | Browse and filter commit history |
+| Graph | Browse and filter commit history with a lane graph |
 | Blame & Line History | See who changed selected lines and review their history |
 | Copy | Copy selected code with its file path and line numbers |
 | Commit | Create or amend a commit, or ask an Agent to write it |
@@ -46,6 +43,32 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 | Cherry-pick, Revert & Reset | Apply a commit, undo it, or reset to it |
 | Stash | Save uncommitted changes and restore them |
 | Workspaces | Switch between repositories, Projects, and worktrees |
+
+## Smooth Graph Curves
+
+The Graph draws its lanes with box-drawing characters. When Herdr pane graphics are enabled, it draws antialiased curves instead:
+
+```toml
+[experimental]
+kitty_graphics = true
+```
+
+This needs a terminal that supports the Kitty graphics protocol, such as Ghostty, Kitty, or WezTerm. Without it, the Graph keeps using characters.
+
+<table>
+  <tr>
+    <th width="50%"><code>kitty_graphics = true</code></th>
+    <th width="50%"><code>kitty_graphics = false</code></th>
+  </tr>
+  <tr>
+    <td><img src="assets/kitty_graphics_true.png" alt="Graph with Kitty graphics enabled" width="100%"></td>
+    <td><img src="assets/kitty_graphics_false.png" alt="Graph with Kitty graphics disabled" width="100%"></td>
+  </tr>
+  <tr>
+    <td>Renders smooth, antialiased curves through Herdr pane graphics. Requires a terminal that supports the Kitty graphics protocol.</td>
+    <td>Renders lanes with box-drawing characters. Works without Kitty graphics support.</td>
+  </tr>
+</table>
 
 ## Keyboard Shortcuts
 

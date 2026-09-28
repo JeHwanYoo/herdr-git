@@ -11,9 +11,7 @@ use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, ScrollbarOrientation, ScrollbarState,
 };
 
-use crate::git::{
-    ChangeSection, Commit, CommitRef, CommitRefKind, DiffTarget, GraphPrefix, WorkingChange,
-};
+use crate::git::{ChangeSection, Commit, CommitRef, CommitRefKind, DiffTarget, WorkingChange};
 
 use super::commands::{ActionCell, Availability, CommandContext, CommandId, draw_action_bar};
 use super::diff::changes_pane_widths;
@@ -24,13 +22,16 @@ use super::shell::{ActiveTab, PaneFocus};
 use super::widgets::{
     self, Axis, ConfirmButton, ConfirmButtons, ListCursor, PickerOutcome, PickerState,
     ScrollbarDrag, TextEdit, TextField, anchored, centered, chord, left_click, picker_edit,
-    scrolled_content_row_at, text_display_width, truncate_to_width, update_picker,
+    text_display_width, truncate_to_width, update_picker,
 };
 use super::{App, ScrollbarOwner, theme};
-use prefix::spans as prefix_spans;
-pub(super) use prefix::width as prefix_width;
+use layout::{GraphLayout, GraphViewport, LayoutNode, ROW_HEIGHT};
 
-mod prefix;
+pub(super) use curves::CurveLayer;
+
+mod curves;
+mod glyphs;
+mod layout;
 
 pub(super) const COMMIT_COMMANDS: [CommandId; 7] = [
     CommandId::CreateBranch,
@@ -142,7 +143,8 @@ pub(super) struct GraphState {
     pub(super) uncommitted: Option<Commit>,
     pub(super) history_loaded: bool,
     pub(super) history_has_more: bool,
-    pub(super) graph_column_width: usize,
+    layout: GraphLayout,
+    curve_viewport: Option<GraphViewport>,
     pub(super) load_more_area: Rect,
     pub(super) visible: Vec<usize>,
     pub(super) selected: usize,
@@ -159,17 +161,15 @@ pub(super) struct GraphState {
     pub(super) back_area: Rect,
     pub(super) graph_scroll: usize,
     pub(super) graph_visible_width: usize,
+    graph_width: usize,
 }
 
 impl GraphState {
     pub(super) fn new(commits: Vec<Commit>, history_loaded: bool) -> Self {
         Self {
             visible: (0..commits.len()).collect(),
-            graph_column_width: commits
-                .iter()
-                .map(|c| prefix_width(&c.graph))
-                .max()
-                .unwrap_or(1),
+            layout: GraphLayout::default(),
+            curve_viewport: None,
             history_has_more: false,
             load_more_area: Rect::default(),
             commits,
@@ -189,6 +189,7 @@ impl GraphState {
             back_area: Rect::default(),
             graph_scroll: 0,
             graph_visible_width: 0,
+            graph_width: 0,
         }
     }
 
@@ -197,7 +198,11 @@ impl GraphState {
         self.uncommitted = None;
         self.history_loaded = false;
         self.history_has_more = false;
-        self.graph_column_width = 1;
+        self.layout = GraphLayout {
+            generation: self.layout.generation + 1,
+            ..GraphLayout::default()
+        };
+        self.curve_viewport = None;
         self.load_more_area = Rect::default();
         self.visible.clear();
         self.selected = 0;
@@ -212,21 +217,36 @@ impl GraphState {
         self.query.text.clear();
     }
 
-    pub(super) fn update_graph_width(&mut self) {
-        let mut width = self
-            .visible
-            .iter()
-            .map(|&i| prefix_width(&self.commits[i].graph))
-            .max()
-            .unwrap_or(1);
-        if let Some(uncommitted) = self
+    pub(super) fn rebuild_layout(&mut self) {
+        let filtered = !self.query.text.is_empty();
+        let uncommitted = self
             .uncommitted
-            .as_ref()
-            .filter(|_| self.showing_uncommitted())
-        {
-            width = width.max(prefix_width(&uncommitted.graph));
+            .iter()
+            .filter(|_| self.showing_uncommitted());
+        let nodes = uncommitted
+            .chain(self.visible.iter().map(|&index| &self.commits[index]))
+            .map(|commit| LayoutNode {
+                sha: &commit.sha,
+                parents: if filtered { &[] } else { &commit.parents },
+            });
+        let layout = GraphLayout::build(nodes, self.layout.generation + 1);
+        if layout.rows != self.layout.rows {
+            self.layout = layout;
         }
-        self.graph_column_width = width;
+    }
+
+    pub(super) fn page_rows(&self) -> usize {
+        let height = usize::from(self.history_content_area.height);
+        (height / ROW_HEIGHT).max(usize::from(height > 0))
+    }
+
+    fn row_at(&self, (column, row): (u16, u16)) -> Option<usize> {
+        let area = self.history_content_area;
+        if !area.contains((column, row).into()) {
+            return None;
+        }
+        let index = usize::from(row - area.y) / ROW_HEIGHT + self.history_scroll;
+        (index < self.display_len()).then_some(index)
     }
 
     pub(super) fn showing_uncommitted(&self) -> bool {
@@ -263,7 +283,7 @@ impl GraphState {
     }
 
     fn page(&self) -> isize {
-        isize::try_from(self.history_content_area.height)
+        isize::try_from(self.page_rows())
             .unwrap_or(isize::MAX)
             .max(1)
     }
@@ -287,7 +307,7 @@ impl App {
             .selected_commit()
             .map(|commit| commit.sha.clone());
         self.graph.visible = filtered_commit_indices(&self.graph.commits, &self.graph.query.text);
-        self.graph.update_graph_width();
+        self.graph.rebuild_layout();
         if on_uncommitted && self.graph.showing_uncommitted() {
             self.graph.selected = 0;
         } else if let Some(sha) = selected_sha {
@@ -323,7 +343,7 @@ impl App {
     }
 
     pub(super) fn max_history_scroll(&self) -> usize {
-        let viewport = self.graph.history_content_area.height as usize;
+        let viewport = self.graph.page_rows();
         if viewport == 0 {
             0
         } else {
@@ -332,7 +352,7 @@ impl App {
     }
 
     pub(super) fn ensure_history_selection_visible(&mut self) {
-        let viewport = self.graph.history_content_area.height as usize;
+        let viewport = self.graph.page_rows();
         if viewport == 0 || self.graph.display_len() == 0 {
             self.graph.history_scroll = 0;
             return;
@@ -367,7 +387,7 @@ impl App {
     fn set_history_selection_from_pointer(&mut self, area: Rect, row: u16) {
         let last = self.graph.display_len().saturating_sub(1);
         let track_max = usize::from(area.height.saturating_sub(1));
-        let viewport = self.graph.history_content_area.height as usize;
+        let viewport = self.graph.page_rows();
         if self.graph.display_len() == 0 || track_max == 0 || viewport == 0 {
             return;
         }
@@ -464,7 +484,7 @@ impl App {
     fn scroll_graph_horizontal(&mut self, delta: isize) {
         let max = self
             .graph
-            .graph_column_width
+            .graph_width
             .saturating_sub(self.graph.graph_visible_width);
         self.graph.graph_scroll = self
             .graph
@@ -499,7 +519,7 @@ impl App {
                 .any(|change| change.section != ChangeSection::Commit)
     }
 
-    fn uncommitted_graph(&self) -> GraphPrefix {
+    fn uncommitted_parents(&self) -> Vec<String> {
         self.graph
             .commits
             .iter()
@@ -510,9 +530,8 @@ impl App {
                     .any(|reference| reference.kind == CommitRefKind::Head)
             })
             .or_else(|| self.graph.commits.first())
-            .map(|commit| commit.graph.clone())
-            .filter(|graph| !graph.text.is_empty())
-            .unwrap_or_else(|| GraphPrefix::plain("*"))
+            .map(|commit| vec![commit.sha.clone()])
+            .unwrap_or_default()
     }
 
     pub(super) fn clamp_history_selection(&mut self) {
@@ -542,11 +561,11 @@ impl App {
 
     pub(super) fn refresh_uncommitted_row(&mut self) {
         if self.should_show_uncommitted_row() {
-            self.graph.uncommitted = Some(Commit::uncommitted(self.uncommitted_graph()));
+            self.graph.uncommitted = Some(Commit::uncommitted(self.uncommitted_parents()));
         } else {
             self.graph.uncommitted = None;
         }
-        self.graph.update_graph_width();
+        self.graph.rebuild_layout();
         self.clamp_history_selection();
     }
 
@@ -813,12 +832,7 @@ impl App {
     }
 
     fn select_commit_row_at(&mut self, pointer: (u16, u16)) -> bool {
-        let Some(row) = scrolled_content_row_at(
-            Some(pointer),
-            self.graph.history_content_area,
-            self.graph.display_len(),
-            self.graph.history_scroll,
-        ) else {
+        let Some(row) = self.graph.row_at(pointer) else {
             return false;
         };
         self.focus = PaneFocus::Commits;
@@ -1056,7 +1070,8 @@ impl App {
         };
         let inner = block.inner(list);
         frame.render_widget(block, list);
-        let overflow = inner.width > 1 && self.graph.display_len() > inner.height as usize;
+        let overflow =
+            inner.width > 1 && self.graph.display_len() * ROW_HEIGHT > usize::from(inner.height);
         self.graph.history_content_area = Rect::new(
             inner.x,
             inner.y,
@@ -1070,56 +1085,12 @@ impl App {
             inner.height,
         ));
         self.ensure_history_selection_visible();
-        let hovered = scrolled_content_row_at(
-            self.shell.mouse_position,
-            self.graph.history_content_area,
-            self.graph.display_len(),
-            self.graph.history_scroll,
-        );
-        let row_width = self.graph.history_content_area.width as usize;
-        let graph_column_width = self.graph.graph_column_width;
-        self.graph.graph_visible_width = graph_view_width(row_width).min(graph_column_width);
-        self.graph.graph_scroll = self
-            .graph
-            .graph_scroll
-            .min(graph_column_width.saturating_sub(self.graph.graph_visible_width));
-        let graph_scroll = self.graph.graph_scroll;
-        let now = SystemTime::now();
-        let first = self.graph.history_scroll;
-        let height = self.graph.history_content_area.height as usize;
-        let items =
-            (first..self.graph.display_len().min(first.saturating_add(height))).map(|row| {
-                let commit = self.graph.row_commit(row).expect("displayed graph row");
-                let style = if row == self.graph.selected {
-                    Style::default().bg(theme::SURFACE_GRAPH_SELECTION)
-                } else {
-                    theme::hover(Style::default(), hovered == Some(row))
-                };
-                ListItem::new(commit_graph_line(
-                    commit,
-                    row_width,
-                    graph_column_width,
-                    graph_scroll,
-                    now,
-                ))
-                .style(style)
-            });
-        let selected = self
-            .graph
-            .selected
-            .checked_sub(first)
-            .filter(|row| *row < height && self.graph.display_len() > 0);
-        let mut state = ListState::default().with_selected(selected);
-        frame.render_stateful_widget(
-            List::new(items).highlight_style(Style::default().add_modifier(Modifier::BOLD)),
-            self.graph.history_content_area,
-            &mut state,
-        );
+        self.draw_commit_rows(frame);
         if let Some(scrollbar_area) = self.graph.history_scrollbar_area {
             let mut scrollbar_state =
                 ScrollbarState::new(self.max_history_scroll().saturating_add(1))
                     .position(self.graph.history_scroll)
-                    .viewport_content_length(self.graph.history_content_area.height as usize);
+                    .viewport_content_length(self.graph.page_rows());
             frame.render_stateful_widget(
                 widgets::scrollbar(ScrollbarOrientation::VerticalRight),
                 scrollbar_area,
@@ -1156,6 +1127,82 @@ impl App {
         } else {
             self.draw_commit_details(frame, lower);
         }
+    }
+
+    fn draw_commit_rows(&mut self, frame: &mut Frame<'_>) {
+        let area = self.graph.history_content_area;
+        let hovered = self
+            .shell
+            .mouse_position
+            .and_then(|pointer| self.graph.row_at(pointer));
+        let row_width = usize::from(area.width);
+        let first = self.graph.history_scroll;
+        let rows = usize::from(area.height)
+            .div_ceil(ROW_HEIGHT)
+            .min(self.graph.display_len().saturating_sub(first));
+        let graph_width = self.graph.layout.width(first, rows);
+        self.graph.graph_width = graph_width;
+        self.graph.graph_visible_width = graph_view_width(row_width).min(graph_width);
+        self.graph.graph_scroll = self
+            .graph
+            .graph_scroll
+            .min(graph_width.saturating_sub(self.graph.graph_visible_width));
+        let now = SystemTime::now();
+        for offset in 0..rows {
+            let row = first + offset;
+            let commit = self.graph.row_commit(row).expect("displayed graph row");
+            let selected = row == self.graph.selected;
+            let style = if selected {
+                theme::selection_row()
+            } else {
+                theme::hover(Style::default(), hovered == Some(row))
+            };
+            let top = area.y + (offset * ROW_HEIGHT) as u16;
+            let lines = commit_rows(commit, row_width, self.graph.graph_visible_width, now);
+            let styles = [style, style.remove_modifier(Modifier::BOLD)];
+            for (line_offset, (line, style)) in lines.into_iter().zip(styles).enumerate() {
+                let y = top + line_offset as u16;
+                if y < area.bottom() {
+                    frame.render_widget(
+                        Paragraph::new(line).style(style),
+                        Rect::new(area.x, y, area.width, 1),
+                    );
+                }
+            }
+        }
+        let viewport = GraphViewport {
+            selected: Some(self.graph.selected),
+            hovered,
+            ..GraphViewport::new(
+                Rect::new(
+                    area.x,
+                    area.y,
+                    self.graph.graph_visible_width as u16,
+                    area.height,
+                ),
+                first,
+                self.graph.graph_scroll,
+                rows,
+            )
+        };
+        self.graph.curve_viewport = None;
+        if self.curves.available() && self.overlay.leaves_graph_visible() {
+            self.graph.curve_viewport = Some(viewport);
+        } else {
+            glyphs::paint(frame.buffer_mut(), &self.graph.layout, &viewport);
+        }
+        if self.graph.graph_scroll > 0 {
+            mark_clipped_graph(frame, area.x, area.y, "‹");
+        }
+        if graph_width > self.graph.graph_scroll + self.graph.graph_visible_width {
+            let right = area.x + self.graph.graph_visible_width.saturating_sub(1) as u16;
+            mark_clipped_graph(frame, right, area.y, "›");
+        }
+    }
+
+    pub(super) fn present_graph_curves(&mut self) -> bool {
+        let viewport = self.graph.curve_viewport.take();
+        self.curves.present(&self.graph.layout, viewport)
     }
 
     pub(super) fn draw_context_menu(&self, frame: &mut Frame<'_>, menu: &mut ContextMenu) {
@@ -1257,133 +1304,84 @@ fn uncommitted_matches_query(query: &str, commit: &Commit) -> bool {
     query.is_empty() || commit.subject.to_lowercase().contains(&query)
 }
 
-const REF_MIN_WIDTH: usize = 52;
-const SHA_MIN_WIDTH: usize = 64;
-const AUTHOR_MIN_WIDTH: usize = 88;
-const TIME_MIN_WIDTH: usize = 108;
-const AUTHOR_WIDTH: usize = 18;
-const SHA_WIDTH: usize = 8;
-const TIME_WIDTH: usize = 15;
-const MIN_SUMMARY_WIDTH: usize = 12;
-const MIN_GRAPH_WIDTH: usize = 6;
-
-fn graph_left_width(width: usize) -> usize {
-    let trailing_width = usize::from(width >= SHA_MIN_WIDTH) * (2 + SHA_WIDTH)
-        + usize::from(width >= AUTHOR_MIN_WIDTH) * (2 + AUTHOR_WIDTH)
-        + usize::from(width >= TIME_MIN_WIDTH) * (2 + TIME_WIDTH);
-    width.saturating_sub(trailing_width)
-}
+const TIME_MIN_WIDTH: usize = 56;
+const TIME_WIDTH: usize = 14;
+const MIN_GRAPH_WIDTH: usize = 3;
+const MIN_SUBJECT_WIDTH: usize = 12;
 
 fn graph_view_width(width: usize) -> usize {
-    let left_width = graph_left_width(width);
-    (left_width * 2 / 5)
+    (width * 2 / 5)
         .max(MIN_GRAPH_WIDTH)
-        .min(left_width.saturating_sub(1))
+        .min(width.saturating_sub(1))
 }
 
-fn commit_graph_line(
+fn mark_clipped_graph(frame: &mut Frame<'_>, x: u16, y: u16, symbol: &str) {
+    if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+        cell.set_symbol(symbol).set_style(theme::hint());
+    }
+}
+
+fn commit_rows(
     commit: &Commit,
     width: usize,
-    graph_column_width: usize,
-    graph_scroll: usize,
+    graph_width: usize,
     now: SystemTime,
-) -> Line<'static> {
+) -> [Line<'static>; 2] {
     if width == 0 {
-        return Line::default();
+        return [Line::default(), Line::default()];
     }
+    let gutter = (graph_width + 1).min(width);
+    let text_width = width - gutter;
+    let time = (!commit.is_uncommitted() && width >= TIME_MIN_WIDTH)
+        .then(|| truncate_to_width(&commit.author_relative(now), TIME_WIDTH))
+        .filter(|time| !time.is_empty());
+    let time_width = time.as_ref().map_or(0, |time| text_display_width(time) + 2);
 
-    let show_sha = width >= SHA_MIN_WIDTH;
-    let show_author = width >= AUTHOR_MIN_WIDTH;
-    let show_time = width >= TIME_MIN_WIDTH;
-    let left_width = graph_left_width(width);
-
-    let graph_width = graph_column_width
-        .saturating_sub(graph_scroll)
-        .min(graph_view_width(width));
-    let mut spans = prefix_spans(&commit.graph, graph_scroll, graph_width);
-    let row_graph_width = prefix_width(&commit.graph);
-    if graph_scroll > 0
-        && let Some(first) = spans.first_mut()
-    {
-        *first = Span::styled("‹", theme::hint());
-    }
-    if row_graph_width > graph_scroll + graph_width
-        && let Some(last) = spans.last_mut()
-    {
-        *last = Span::styled("›", theme::hint());
-    }
-    pad_spans_to_width(&mut spans, graph_width);
-    if Line::from(spans.clone()).width() < left_width {
-        spans.push(Span::raw(" "));
-    }
-
-    let used = Line::from(spans.clone()).width();
-    if width >= REF_MIN_WIDTH && !commit.refs.is_empty() {
-        let badge_budget = left_width
-            .saturating_sub(used)
-            .saturating_sub(MIN_SUMMARY_WIDTH);
-        spans.extend(commit_ref_badges(&commit.refs, badge_budget));
-    }
-
-    let used = Line::from(spans.clone()).width();
-    let summary_width = left_width.saturating_sub(used);
-    let subject_spans = commit_subject_spans(&commit.subject, summary_width);
+    let mut title = vec![Span::raw(" ".repeat(gutter))];
+    let subject_width = text_width.saturating_sub(time_width);
     if commit.is_uncommitted() {
-        spans.extend(subject_spans.into_iter().map(|span| {
-            Span::styled(
-                span.content.to_string(),
-                theme::hint().add_modifier(Modifier::BOLD),
-            )
-        }));
+        title.push(Span::styled(
+            truncate_to_width("Uncommitted changes", subject_width),
+            theme::hint().add_modifier(Modifier::BOLD),
+        ));
     } else {
-        spans.extend(subject_spans);
+        let badges = commit_ref_badges(
+            &commit.refs,
+            subject_width
+                .saturating_sub(MIN_SUBJECT_WIDTH)
+                .min(subject_width / 2),
+        );
+        let badge_width = Line::from(badges.clone()).width();
+        title.extend(badges);
+        title.extend(commit_subject_spans(
+            &commit.subject,
+            subject_width.saturating_sub(badge_width),
+        ));
     }
-    pad_spans_to_width(&mut spans, left_width);
+    if let Some(time) = time {
+        pad_spans_to_width(&mut title, (width + 1).saturating_sub(time_width));
+        title.push(Span::styled(time, theme::hint()));
+    }
+    pad_spans_to_width(&mut title, width);
 
-    if show_author {
-        spans.push(Span::raw("  "));
-        if commit.is_uncommitted() {
-            push_padding(&mut spans, AUTHOR_WIDTH);
-        } else {
-            let author = format!(
-                " {}",
-                truncate_to_width(&commit.author_name, AUTHOR_WIDTH.saturating_sub(2))
-            );
-            spans.push(Span::raw(author.clone()));
-            push_padding(
-                &mut spans,
-                AUTHOR_WIDTH.saturating_sub(text_display_width(&author)),
-            );
-        }
+    let mut detail = vec![Span::raw(" ".repeat(gutter))];
+    if commit.is_uncommitted() {
+        detail.push(Span::styled(
+            truncate_to_width("Working tree", text_width),
+            theme::disabled(),
+        ));
+    } else {
+        let sha = truncate_to_width(&short_commit(&commit.sha), text_width);
+        let remaining = text_width.saturating_sub(text_display_width(&sha) + 1);
+        detail.push(Span::styled(sha, theme::accent()));
+        detail.push(Span::raw(" "));
+        detail.push(Span::styled(
+            truncate_to_width(&commit.author_name, remaining),
+            theme::secondary(),
+        ));
     }
-    if show_sha {
-        spans.push(Span::raw("  "));
-        if commit.is_uncommitted() {
-            push_padding(&mut spans, SHA_WIDTH);
-        } else {
-            let sha = truncate_to_width(&short_commit(&commit.sha), SHA_WIDTH);
-            spans.push(Span::styled(sha.clone(), theme::accent_bold()));
-            push_padding(
-                &mut spans,
-                SHA_WIDTH.saturating_sub(text_display_width(&sha)),
-            );
-        }
-    }
-    if show_time {
-        spans.push(Span::raw("  "));
-        if commit.is_uncommitted() {
-            push_padding(&mut spans, TIME_WIDTH);
-        } else {
-            let relative = truncate_to_width(&commit.author_relative(now), TIME_WIDTH);
-            spans.push(Span::styled(relative.clone(), theme::hint()));
-            push_padding(
-                &mut spans,
-                TIME_WIDTH.saturating_sub(text_display_width(&relative)),
-            );
-        }
-    }
-    pad_spans_to_width(&mut spans, width);
-    Line::from(spans)
+    pad_spans_to_width(&mut detail, width);
+    [Line::from(title), Line::from(detail)]
 }
 
 fn commit_ref_badges(references: &[CommitRef], width: usize) -> Vec<Span<'static>> {
@@ -1544,7 +1542,7 @@ mod tests {
     use crate::ui::{App, theme};
 
     use super::{
-        GRAPH_ACTIONS, GraphAction, GraphState, commit_graph_line, commit_ref_badges,
+        GRAPH_ACTIONS, GraphAction, GraphState, ROW_HEIGHT, commit_ref_badges, commit_rows,
         commit_subject_spans,
     };
 
@@ -1558,7 +1556,6 @@ mod tests {
             refs: Vec::new(),
             subject: format!("commit-{index:02}"),
             body: String::new(),
-            graph: crate::git::GraphPrefix::plain("*"),
         }
     }
 
@@ -1618,36 +1615,45 @@ mod tests {
 
     #[test]
     fn wide_graphs_are_clipped_so_the_subject_stays_visible_and_scroll_sideways() {
-        let lanes = "| ".repeat(40) + "*";
-        let commit = Commit {
-            sha: "abcdef1234567890".to_owned(),
-            parents: Vec::new(),
-            author_name: "Ada".to_owned(),
-            author_email: "ada@example.com".to_owned(),
-            author_time: "2026-09-01T00:00:00+00:00".to_owned(),
-            refs: Vec::new(),
-            subject: "keep this subject".to_owned(),
-            body: String::new(),
-            graph: crate::git::GraphPrefix::plain(&lanes),
+        let mut app = offline_app();
+        app.shell.active_tab = ActiveTab::History;
+        app.focus = PaneFocus::Commits;
+        app.graph.history_loaded = true;
+        app.graph.commits = (0..40)
+            .map(|index| Commit {
+                parents: vec![format!("pending-{index}")],
+                subject: format!("keep subject {index}"),
+                ..numbered_commit(index)
+            })
+            .collect();
+        app.graph.visible = (0..40).collect();
+        app.graph.rebuild_layout();
+        let text = |app: &mut App| {
+            let buffer = render(app, 120, 30);
+            let area = app.graph.history_content_area;
+            row_text(&buffer, area, area.y)
         };
-        let now = UNIX_EPOCH + Duration::from_secs(1_790_000_000);
-        let text = |scroll| {
-            commit_graph_line(&commit, 120, lanes.len(), scroll, now)
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        };
-        let start = text(0);
-        assert!(start.contains("keep this subject"), "{start}");
-        assert!(start.contains('›') && !start.contains('‹'), "{start}");
-        let scrolled = text(lanes.len() - super::graph_view_width(120));
+        let start = text(&mut app);
+        assert!(start.contains("keep subject 0"), "{start}");
+        assert!(!start.contains('›') && !start.contains('‹'), "{start}");
+        press(&mut app, KeyCode::End);
+        let end = text(&mut app);
+        assert!(end.contains('›') && !end.contains('‹'), "{end}");
+        assert!(end.contains("keep subject"), "{end}");
+        for _ in 0..60 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        let scrolled = text(&mut app);
         assert!(
             scrolled.contains('‹') && !scrolled.contains('›'),
             "{scrolled}"
         );
-        assert!(scrolled.contains('●'), "{scrolled}");
-        assert!(scrolled.contains("keep this subject"), "{scrolled}");
+        assert!(scrolled.contains("keep subject"), "{scrolled}");
+        let buffer = render(&mut app, 120, 30);
+        let area = app.graph.history_content_area;
+        let last = app.graph.selected - app.graph.history_scroll;
+        let node_row = row_text(&buffer, area, area.y + (last * ROW_HEIGHT) as u16);
+        assert!(node_row.contains('●'), "{node_row}");
     }
 
     #[test]
@@ -1692,7 +1698,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_row_uses_typed_badges_and_aligned_metadata_then_adapts() {
+    fn graph_rows_put_the_subject_first_and_metadata_below_then_adapt() {
         let commit = Commit {
             sha: "f889396123456789".to_owned(),
             parents: vec!["parent".to_owned()],
@@ -1715,102 +1721,70 @@ mod tests {
             ],
             subject: "feat(customer): add email lookup API".to_owned(),
             body: String::new(),
-            graph: crate::git::GraphPrefix::plain("*"),
+        };
+        let text = |line: &ratatui::text::Line<'_>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
         };
 
         let now = UNIX_EPOCH + Duration::from_secs(1_788_330_480 + 25 * 60);
-        let wide = commit_graph_line(&commit, 160, 3, 0, now);
-        let wide_text = wide
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert_eq!(wide.width(), 160);
+        let [title, detail] = commit_rows(&commit, 120, 3, now);
+        assert_eq!((title.width(), detail.width()), (120, 120));
+        let title_text = text(&title);
+        assert!(title_text.ends_with("25 minutes ago "), "{title_text}");
+        assert_eq!(text(&detail).trim_end(), "    f8893961 Donghyeok Byun");
         let remote_badge = format!("{} origin/staging", theme::REMOTE_GLYPH);
         let branch_badge = format!("{} feature/customer", theme::BRANCH_GLYPH);
         let tag_badge = format!("{} v0.1.0", theme::TAG_GLYPH);
-        let ordered = [
-            "●",
+        let mut previous = 0;
+        for token in [
             remote_badge.as_str(),
             branch_badge.as_str(),
             tag_badge.as_str(),
             "feat(customer): add email lookup API",
-            " Donghyeok Byun",
-            "f8893961",
-            "25 minutes ago",
-        ];
-        let mut previous = 0;
-        for token in ordered {
-            let position = wide_text[previous..]
+        ] {
+            let position = title_text[previous..]
                 .find(token)
                 .map(|offset| previous + offset)
-                .unwrap_or_else(|| panic!("missing graph column: {token}"));
+                .unwrap_or_else(|| panic!("missing title token: {token}"));
             previous = position + token.len();
         }
-        assert!(wide.spans.iter().any(|span| {
+        assert!(title.spans.iter().any(|span| {
             span.content.contains("origin/staging")
                 && span.style.fg.is_none()
                 && span.style.bg.is_some()
         }));
+
         let second = Commit {
-            sha: "5217f9e123456789".to_owned(),
-            author_name: "Jun".to_owned(),
             author_time: "2026-09-02T15:51:30+09:00".to_owned(),
-            refs: Vec::new(),
             subject: "fix: compact response".to_owned(),
             ..commit.clone()
         };
-        let second_text = commit_graph_line(&second, 160, 3, 0, now)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        let display_position = |text: &str, needle: &str| {
-            text.find(needle)
-                .map(|position| text_display_width(&text[..position]))
-        };
+        let second_title = text(&commit_rows(&second, 120, 3, now)[0]);
         assert_eq!(
-            display_position(&wide_text, ""),
-            display_position(&second_text, "")
-        );
-        assert_eq!(
-            display_position(&wide_text, "f8893961"),
-            display_position(&second_text, "5217f9e1")
-        );
-        assert_eq!(
-            display_position(&wide_text, "25 minutes ago"),
-            display_position(&second_text, "2 minutes ago")
+            text_display_width(&title_text[..title_text.find("25 minutes").unwrap()]),
+            text_display_width(&second_title[..second_title.find("2 minutes").unwrap()]) - 1
         );
 
-        let narrow = commit_graph_line(&commit, 40, 3, 0, now);
-        let narrow_text = narrow
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert_eq!(narrow.width(), 40);
-        assert!(narrow_text.contains("feat(customer)"));
-        assert!(!narrow_text.contains("origin/staging"));
-        assert!(!narrow_text.contains("Donghyeok"));
-        assert!(!narrow_text.contains("f8893961"));
-        assert!(!narrow_text.contains("minutes ago"));
+        let [title, detail] = commit_rows(&commit, 40, 3, now);
+        assert_eq!((title.width(), detail.width()), (40, 40));
+        assert!(text(&title).contains("feat(customer)"));
+        assert!(!text(&title).contains("minutes ago"));
+        assert!(text(&detail).contains("f8893961"));
 
         let korean = Commit {
             author_name: "김선우".to_owned(),
+            refs: Vec::new(),
             subject: "feat(catalog): 채널 variant 생성·조회·식별자 반영 API 추가".to_owned(),
             ..commit.clone()
         };
-        let korean_row = commit_graph_line(&korean, 88, 3, 0, now);
-        let korean_text = korean_row
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert_eq!(korean_row.width(), 88);
-        assert!(korean_text.contains("feat(catalog)"));
-        assert!(korean_text.contains(" 김선우"));
-        assert!(korean_text.contains("f8893961"));
-        assert!(!korean_text.contains("minutes ago"));
+        let [title, detail] = commit_rows(&korean, 88, 5, now);
+        assert_eq!((title.width(), detail.width()), (88, 88));
+        assert!(text(&title).contains("feat(catalog)"));
+        assert!(text(&title).contains("minutes ago"));
+        assert!(text(&detail).contains("f8893961 김선우"));
     }
 
     #[test]
@@ -1851,30 +1825,28 @@ mod tests {
             refs: Vec::new(),
             subject: subject.to_owned(),
             body: String::new(),
-            graph: crate::git::GraphPrefix::plain("*"),
         };
-        let row = commit_graph_line(
+        let [title, detail] = commit_rows(
             &commit,
             120,
             3,
-            0,
             UNIX_EPOCH + Duration::from_secs(1_788_330_480),
         );
-        let author = row
+        let author = detail
             .spans
             .iter()
-            .find(|span| span.content.contains(" Jun Lee"))
-            .expect("author column");
-        assert_eq!(author.style.fg, None);
+            .find(|span| span.content == "Jun Lee")
+            .expect("author");
+        assert_eq!(author.style.fg, Some(theme::SECONDARY));
         assert!(!author.style.add_modifier.contains(Modifier::BOLD));
-        let sha = row
+        let sha = detail
             .spans
             .iter()
             .find(|span| span.content == "f8893961")
             .expect("short SHA");
         assert_eq!(sha.style.fg, Some(theme::ACCENT));
-        assert!(sha.style.add_modifier.contains(Modifier::BOLD));
-        let relative = row
+        assert!(!sha.style.add_modifier.contains(Modifier::BOLD));
+        let relative = title
             .spans
             .iter()
             .find(|span| span.content == "0 seconds ago")
@@ -1955,20 +1927,29 @@ mod tests {
             }],
             subject: "feat: color graph rows".to_owned(),
             body: String::new(),
-            graph: crate::git::GraphPrefix::plain("*"),
         }];
         app.graph.visible = vec![0];
         app.graph.selected = 0;
+        app.graph.rebuild_layout();
         let buffer = render(&mut app, 200, 20);
         let row = app.graph.list_area.y + 1;
         let left = app.graph.list_area.x + 1;
         let right = app.graph.list_area.right() - 2;
-        assert_eq!(buffer[(left, row)].bg, theme::SURFACE_GRAPH_SELECTION);
-        assert_eq!(buffer[(right, row)].bg, theme::SURFACE_GRAPH_SELECTION);
+        for line in [row, row + 1] {
+            assert_eq!(buffer[(left, line)].bg, theme::SURFACE_SELECTION);
+            assert_eq!(buffer[(right, line)].bg, theme::SURFACE_SELECTION);
+        }
+        assert!(buffer[(left + 1, row)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(left + 1, row)].symbol(), "●");
+        assert!(
+            !buffer[(left + 3, row + 1)]
+                .modifier
+                .contains(Modifier::BOLD)
+        );
         let badge = (left..=right)
             .find(|column| buffer[(*column, row)].symbol() == theme::REMOTE_GLYPH)
             .expect("remote badge icon");
-        assert_ne!(buffer[(badge, row)].bg, theme::SURFACE_GRAPH_SELECTION);
+        assert_ne!(buffer[(badge, row)].bg, theme::SURFACE_SELECTION);
     }
 
     #[test]
@@ -1997,7 +1978,6 @@ mod tests {
             refs: Vec::new(),
             subject: String::new(),
             body: String::new(),
-            graph: crate::git::GraphPrefix::plain("*"),
         };
         app.graph.commits = (0..30)
             .map(|index| Commit {
@@ -2153,7 +2133,6 @@ mod tests {
                 refs: Vec::new(),
                 subject: "feat: preview a commit file".to_owned(),
                 body: String::new(),
-                graph: crate::git::GraphPrefix::plain("*"),
             },
             changes: vec![ChangedPath {
                 status: "M".to_owned(),
@@ -2595,8 +2574,9 @@ mod tests {
         app.graph.history_loaded = true;
         app.graph.commits = (0..30).map(numbered_commit).collect();
         app.graph.visible = (0..30).collect();
-        render(&mut app, 100, 20);
-        let page = usize::from(app.graph.history_content_area.height);
+        render(&mut app, 100, 32);
+        let page = app.graph.page_rows();
+        assert_eq!(page, usize::from(app.graph.history_content_area.height) / 2);
         assert!(page > 1);
 
         press(&mut app, KeyCode::PageDown);
@@ -2681,7 +2661,10 @@ mod tests {
         let buffer = render(&mut app, 100, 32);
         let list = app.graph.history_content_area;
         assert!(row_text(&buffer, list, list.y).contains("Uncommitted"));
-        assert!(row_text(&buffer, list, list.y + 1).contains("Base"));
+        assert!(row_text(&buffer, list, list.y + 1).contains("Working tree"));
+        assert!(row_text(&buffer, list, list.y + 2).contains("Base"));
+        assert!(row_text(&buffer, list, list.y).contains('○'));
+        assert!(row_text(&buffer, list, list.y + 1).contains('│'));
 
         app.select(0);
         assert!(app.graph.selected_commit().is_none());

@@ -1092,7 +1092,6 @@ mod tests {
             refs: Vec::new(),
             subject: String::new(),
             body: String::new(),
-            graph: crate::git::GraphPrefix::plain(""),
         };
         let agent = HerdrAgent {
             pane_id: "pane-1".to_owned(),
