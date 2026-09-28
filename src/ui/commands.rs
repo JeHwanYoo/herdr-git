@@ -498,6 +498,7 @@ impl App {
             return;
         }
         match command {
+            CommandId::Update => self.open_update_confirmation(),
             CommandId::Refresh => {
                 self.request_background_refresh(
                     "Refreshing repositories",
@@ -1398,6 +1399,11 @@ impl App {
         });
         let items = palette.rows.iter().enumerate().map(|(index, command)| {
             let availability = command.availability(&self.ops.command_context);
+            let update_available = *command == CommandId::Update
+                && matches!(
+                    self.update.status,
+                    super::update::UpdateStatus::Available(_)
+                );
             let (command_style, status_style) = if availability.enabled {
                 (Style::default(), Style::default())
             } else {
@@ -1408,7 +1414,14 @@ impl App {
                     format!("{:<COMMAND_COLUMN_WIDTH$}", command.title()),
                     command_style,
                 ),
-                Span::styled(command_status_label(availability.reason), status_style),
+                Span::styled(
+                    if update_available {
+                        "Update available"
+                    } else {
+                        command_status_label(availability.reason)
+                    },
+                    status_style,
+                ),
             ]))
             .style(theme::hover(Style::default(), hovered == Some(index)))
         });

@@ -22,6 +22,10 @@ pub(super) use super::workspaces::WorkspacePicker;
 #[derive(Debug)]
 pub(super) enum Overlay {
     None,
+    Update {
+        tag: String,
+        buttons: ConfirmButtons,
+    },
     Comparison(super::comparison::ComparisonDialog),
     Rebase(super::commands::RebaseEditor),
     Workspace(WorkspacePicker),
@@ -69,6 +73,7 @@ impl Overlay {
     pub(super) fn animating(&self) -> bool {
         match self {
             Self::None
+            | Self::Update { .. }
             | Self::Workspace(_)
             | Self::Confirm { .. }
             | Self::RemoveProject { .. }
@@ -200,6 +205,7 @@ impl App {
             Overlay::Remotes(_) => self.handle_remotes(input),
             Overlay::RemoveProject { .. } => self.handle_remove_project_confirmation(input),
             Overlay::Confirm { .. } => self.handle_confirmation(input),
+            Overlay::Update { .. } => self.handle_update_confirmation(input),
             Overlay::ContextMenu(_) => self.handle_context_menu(input),
             Overlay::Commands(_) => self.handle_commands(input),
         }
@@ -210,6 +216,10 @@ impl App {
         let overlay = mem::replace(&mut self.overlay, Overlay::None);
         self.overlay = match overlay {
             Overlay::None => Overlay::None,
+            Overlay::Update { tag, mut buttons } => {
+                self.draw_update_confirmation(frame, &tag, &mut buttons);
+                Overlay::Update { tag, buttons }
+            }
             Overlay::GraphFilter => Overlay::GraphFilter,
             Overlay::Result(view, previous) => {
                 self.draw_result(frame, &view);

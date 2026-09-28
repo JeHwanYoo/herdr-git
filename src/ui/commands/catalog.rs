@@ -3,6 +3,7 @@ use crate::git::{GitCommandFacts, GitOperation, ResetMode};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ui) enum CommandId {
     Refresh,
+    Update,
     SwitchRepository,
     AddProject,
     RemoveProject,
@@ -29,7 +30,7 @@ pub(in crate::ui) enum CommandId {
     CopySha,
 }
 
-pub(in crate::ui) const COMMANDS: [CommandId; 18] = [
+pub(in crate::ui) const COMMANDS: [CommandId; 19] = [
     CommandId::Refresh,
     CommandId::SwitchRepository,
     CommandId::AddRemote,
@@ -48,6 +49,7 @@ pub(in crate::ui) const COMMANDS: [CommandId; 18] = [
     CommandId::DiscardTrackedChanges,
     CommandId::CopySha,
     CommandId::Stash,
+    CommandId::Update,
 ];
 
 pub(in crate::ui) const QUICK_ACTIONS: [CommandId; 6] = [
@@ -171,6 +173,7 @@ impl CommandId {
     pub(in crate::ui) fn title(self) -> &'static str {
         match self {
             Self::Refresh => "Refresh",
+            Self::Update => "Update Herdr Git…",
             Self::SwitchRepository => "Switch workspace",
             Self::AddProject => "Add Project…",
             Self::RemoveProject => "Remove Project",
@@ -204,10 +207,12 @@ impl CommandId {
             reason: Some(reason),
         };
         match self {
-            Self::Refresh | Self::SwitchRepository | Self::AddProject => Availability {
-                enabled: true,
-                reason: None,
-            },
+            Self::Refresh | Self::Update | Self::SwitchRepository | Self::AddProject => {
+                Availability {
+                    enabled: true,
+                    reason: None,
+                }
+            }
             Self::RemoveProject if !context.can_remove_project => {
                 disabled("no registered Project selected")
             }
@@ -293,6 +298,7 @@ impl CommandId {
 
     pub(in crate::ui) fn result_name(self) -> &'static str {
         match self {
+            Self::Update => "Update Herdr Git",
             Self::AddRemote => "Add Remote",
             Self::ShowRemotes => "Remotes",
             Self::RemoveRemote => "Remove Remote",
@@ -378,6 +384,7 @@ impl CommandId {
     ) -> Result<GitOperation, &'static str> {
         let commit = || context.selected_commit.clone().ok_or("no commit selected");
         match self {
+            Self::Update => Err("plugin update confirmation is required"),
             Self::DiscardTrackedChanges => Ok(GitOperation::DiscardTrackedChanges {
                 head: context
                     .head_commit
@@ -472,7 +479,8 @@ mod tests {
                 "Reset…",
                 "Discard all tracked changes…",
                 "Copy SHA…",
-                "Stash…"
+                "Stash…",
+                "Update Herdr Git…"
             ]
         );
     }

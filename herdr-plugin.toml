@@ -1,6 +1,6 @@
 id = "io.github.jehwanyoo.herdr-git"
 name = "Herdr Git"
-version = "0.2.1"
+version = "0.2.2"
 min_herdr_version = "0.8.0"
 description = "Git history, diffs, blame, and repository operations in a Herdr pane"
 platforms = ["linux", "macos"]

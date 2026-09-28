@@ -56,6 +56,7 @@ mod syntax;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod update;
 mod view;
 mod widgets;
 mod workspaces;
@@ -117,6 +118,7 @@ pub fn run(path: &Path) -> Result<(), String> {
             }
         };
         app.curves = CurveLayer::connect();
+        app.check_for_update();
         let mut dirty = true;
         loop {
             dirty |= app.maybe_auto_refresh();
@@ -156,6 +158,17 @@ pub fn run(path: &Path) -> Result<(), String> {
                 }
                 if close {
                     break Ok(());
+                }
+                if app.update.restart_requested {
+                    let executable = app.update.executable.clone().expect("restart executable");
+                    let cwd = app.active_path.clone();
+                    drop(app);
+                    stop_terminal(&mut terminal);
+                    use std::os::unix::process::CommandExt;
+                    let error = std::process::Command::new(executable)
+                        .current_dir(cwd)
+                        .exec();
+                    break Err(format!("Could not restart Herdr Git: {error}"));
                 }
                 if let Some(copy) = app.pending_clipboard.take() {
                     match copy {
@@ -217,6 +230,7 @@ struct App {
     local_identity: Option<LocalIdentity>,
     github_origin: bool,
     shell: ShellState,
+    update: update::UpdateState,
     workspaces: WorkspacesState,
     graph: GraphState,
     curves: CurveLayer,
@@ -294,6 +308,7 @@ impl App {
             local_identity,
             github_origin,
             shell: ShellState::new(invoking_path),
+            update: update::UpdateState::from_environment(),
             workspaces: WorkspacesState::new(project_registry),
             graph: GraphState::new(Vec::new(), false),
             curves: CurveLayer::disabled(),
@@ -555,6 +570,7 @@ impl App {
 
     fn maybe_auto_refresh(&mut self) -> bool {
         let mut changed = self.receive_foreground_results();
+        changed |= self.poll_update();
         changed |= self.receive_history();
         changed |= self.reveal_pending_commit();
         changed |= self.maintenance.tick(

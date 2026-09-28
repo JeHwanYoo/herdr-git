@@ -7,8 +7,10 @@ use serde_json::Value;
 
 mod graphics;
 mod sidebar;
+mod update;
 
 pub use graphics::{GraphicsPlacement, GraphicsSurface};
+pub(crate) use update::{install_update, latest_version, save_skipped_version, skipped_version};
 
 const PLUGIN_ID: &str = "io.github.jehwanyoo.herdr-git";
 const PANE_TITLE: &str = "Git";

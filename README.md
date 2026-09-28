@@ -15,6 +15,8 @@ herdr plugin action invoke io.github.jehwanyoo.herdr-git.open
 
 Run the command to toggle the Git pane.
 
+The version button in the top-right checks GitHub releases in the background at startup and every 30 minutes. When a newer stable release is available, click it and confirm to reinstall through the Herdr CLI. **Skip this version** hides that release's update offer and saves the choice in the plugin state directory. **Alt+P → Update Herdr Git…** appears at the bottom of Commands, with **Update available** in its Status column when a newer release is detected, including skipped releases. It lets you install a skipped release or reinstall the latest default branch when no newer release is detected, after confirmation. After installation and build finish, click **Restart to update** to restart the Git pane. Failed update checks stay silent. Herdr refuses to reinstall locally linked plugins.
+
 To bind it to `prefix+u`, add this to `~/.config/herdr/config.toml`:
 
 ```toml
