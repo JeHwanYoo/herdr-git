@@ -276,6 +276,14 @@ impl App {
                 self.open_line_history();
             }
             MouseEventKind::Down(MouseButton::Left) if self.shell.tab_area.contains(position) => {
+                if self.update.skip_area.contains(position) {
+                    self.skip_update();
+                    return true;
+                }
+                if self.update.area.contains(position) {
+                    self.activate_update();
+                    return true;
+                }
                 match header_action_at(mouse.column.saturating_sub(self.shell.tab_area.x)) {
                     Some(HeaderAction::History) => self.set_tab(ActiveTab::History),
                     Some(HeaderAction::Changes) => self.set_tab(ActiveTab::Changes),
@@ -544,6 +552,7 @@ impl App {
             }
         }
         frame.render_widget(Paragraph::new(Line::from(navigation)), self.shell.tab_area);
+        self.draw_update(frame, self.shell.tab_area);
         let quick_action_area = Rect::new(
             area.x,
             area.y.saturating_add(margin.saturating_add(2)),

@@ -48,6 +48,7 @@ Module names below refer to children of `ui`; App is defined in `ui.rs`.
 | `effect.rs` | Requests, results, and workers for foreground jobs and repository refreshes |
 | `lanes.rs` | Job scheduling, read cancellation, and refresh result application to App |
 | `history.rs` | History paging and maintenance workers, including scheduling and shutdown |
+| `update.rs` | Plugin update state, background checks and installation, and version button |
 | `widgets.rs` | Reusable UI controls and geometry |
 | `theme.rs` | Visual styles |
 
