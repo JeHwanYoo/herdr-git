@@ -19,21 +19,6 @@ pub struct CommitRef {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GraphPrefix {
-    pub text: String,
-    pub colors: Vec<Option<u8>>,
-}
-
-impl GraphPrefix {
-    pub fn plain(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            colors: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub sha: String,
     pub parents: Vec<String>,
@@ -43,21 +28,19 @@ pub struct Commit {
     pub refs: Vec<CommitRef>,
     pub subject: String,
     pub body: String,
-    pub graph: GraphPrefix,
 }
 
 impl Commit {
-    pub fn uncommitted(graph: GraphPrefix) -> Self {
+    pub fn uncommitted(parents: Vec<String>) -> Self {
         Self {
             sha: String::new(),
-            parents: Vec::new(),
+            parents,
             author_name: String::new(),
             author_email: String::new(),
             author_time: String::new(),
             refs: Vec::new(),
             subject: "Uncommitted".to_owned(),
             body: String::new(),
-            graph,
         }
     }
 

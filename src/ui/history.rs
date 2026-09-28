@@ -257,7 +257,7 @@ impl App {
                 || self
                     .graph
                     .history_scroll
-                    .saturating_add(2 * self.graph.history_content_area.height as usize)
+                    .saturating_add(2 * self.graph.page_rows())
                     < self.graph.display_len())
         {
             return;
@@ -318,7 +318,6 @@ impl App {
         self.history.last_load_duration = Some(result.elapsed);
         let selected = self.graph.selected_commit().map(|c| c.sha.clone());
         let on_uncommitted = self.graph.uncommitted_selected();
-        let previous_visible = self.graph.visible.len();
         self.graph.history_has_more = page.has_more;
         self.graph.history_loaded = true;
         if result.request.replace {
@@ -342,16 +341,6 @@ impl App {
                 self.graph.visible = (0..self.graph.commits.len()).collect();
             }
             self.history.follow_head = false;
-        }
-        if result.request.replace {
-            self.graph.update_graph_width();
-        } else {
-            let added_width = self.graph.visible[previous_visible..]
-                .iter()
-                .map(|&index| crate::ui::graph::prefix_width(&self.graph.commits[index].graph))
-                .max()
-                .unwrap_or(1);
-            self.graph.graph_column_width = self.graph.graph_column_width.max(added_width);
         }
         self.refresh_uncommitted_row();
         if result.request.follow_head {

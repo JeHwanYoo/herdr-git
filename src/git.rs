@@ -12,14 +12,13 @@ mod process;
 mod rebase;
 mod refs;
 #[cfg(test)]
-use parse::{parse_graph, parse_history};
+use parse::parse_history;
 
 pub use history::{HISTORY_PAGE_SIZE, HistoryPage, HistorySession};
 pub use model::{
     BlameInfo, BranchStatus, ChangeOverview, ChangeSection, ChangedPath, ChangesComparison, Commit,
-    CommitDetails, CommitRef, CommitRefKind, DiffSummary, DiffTarget, GraphPrefix,
-    LineHistoryCommit, LocalIdentity, RepositoryFingerprint, ResetContext, ResetTarget,
-    WorkingChange, WorktreeReport,
+    CommitDetails, CommitRef, CommitRefKind, DiffSummary, DiffTarget, LineHistoryCommit,
+    LocalIdentity, RepositoryFingerprint, ResetContext, ResetTarget, WorkingChange, WorktreeReport,
 };
 pub use operation::{GitOperation, ResetMode};
 use parse::{
@@ -110,9 +109,9 @@ mod tests {
     use super::parse::{parse_iso_time, parse_worktree_report, relative_time};
     use super::{
         ChangeSection, CommitRefKind, DiffTarget, ReadError, Repository,
-        cancellable_command_output, parse_blame, parse_blame_range, parse_changes, parse_graph,
-        parse_history, parse_line_history, parse_numstat, summarize_untracked_bytes,
-        summarize_untracked_reader, with_read_cancellation_result, worktree_report,
+        cancellable_command_output, parse_blame, parse_blame_range, parse_changes, parse_history,
+        parse_line_history, parse_numstat, summarize_untracked_bytes, summarize_untracked_reader,
+        with_read_cancellation_result, worktree_report,
     };
 
     #[test]
@@ -485,15 +484,6 @@ mod tests {
             parse_worktree_report(unfetched).unwrap().fingerprint
         );
         assert!(parse_worktree_report("? a.txt\n").is_err());
-    }
-
-    #[test]
-    fn associates_graph_prefix_with_sha() {
-        let rows = parse_graph("* \u{1e}abc\n|\\\n| * \u{1e}def\n");
-        assert_eq!(
-            rows,
-            [("abc".into(), "*".into()), ("def".into(), "| *".into())]
-        );
     }
 
     #[test]

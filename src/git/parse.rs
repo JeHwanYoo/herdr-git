@@ -36,7 +36,6 @@ pub(super) fn parse_history(output: &str) -> Result<Vec<Commit>, String> {
                 refs,
                 subject,
                 body,
-                graph: super::GraphPrefix::plain("*"),
             })
         })
         .collect()
@@ -264,17 +263,6 @@ pub(super) fn parse_worktree_report(output: &str) -> Result<WorktreeReport, Stri
         has_untracked: output.lines().any(|line| line.starts_with("? ")),
         fingerprint: hasher.finish(),
     })
-}
-
-#[cfg(test)]
-pub(super) fn parse_graph(output: &str) -> Vec<(String, String)> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let (lanes, sha) = line.split_once('\u{1e}')?;
-            Some((sha.trim().to_owned(), lanes.trim_end().to_owned()))
-        })
-        .collect()
 }
 
 pub(super) fn parse_changes(output: &str) -> Vec<ChangedPath> {
