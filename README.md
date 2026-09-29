@@ -85,6 +85,10 @@ just check  # Check formatting, Clippy, and tests
 
 Run `just link` again after changing Rust to rebuild the linked binary.
 
+## Contributing
+
+[Contribution guide](CONTRIBUTING.md)
+
 ## Changelog
 
 [Changelog](CHANGELOG.md)
