@@ -2,7 +2,7 @@
 
 ![Herdr Git](assets/app.png)
 
-A Git client for Herdr, focused on the essentials.
+A Git client for Herdr.
 
 ## Install
 
@@ -13,9 +13,7 @@ herdr plugin install JeHwanYoo/herdr-git
 herdr plugin action invoke io.github.jehwanyoo.herdr-git.open
 ```
 
-Run the command to toggle the Git pane.
-
-The version button in the top-right checks GitHub releases in the background at startup and every 30 minutes. When a newer stable release is available, click it and confirm to reinstall through the Herdr CLI. **Skip this version** hides that release's update offer and saves the choice in the plugin state directory. **Alt+P → Update Herdr Git…** appears at the bottom of Commands, with **Update available** in its Status column when a newer release is detected, including skipped releases. It lets you install a skipped release or reinstall the latest default branch when no newer release is detected, after confirmation. After installation and build finish, click **Restart to update** to restart the Git pane. Failed update checks stay silent. Herdr refuses to reinstall locally linked plugins.
+The second command toggles the Git pane.
 
 To bind it to `prefix+u`, add this to `~/.config/herdr/config.toml`:
 
@@ -36,17 +34,17 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 | Changes | Review changed files, stage or unstage them, and discard tracked changes |
 | Diffs | View changes side by side and compare commits or branches |
 | Graph | Browse and filter commit history with a lane graph |
-| Blame & Line History | See who changed selected lines and review their history |
+| Blame & line history | See who changed selected lines and review their history |
 | Copy | Copy selected code with its file path and line numbers |
 | Commit | Create or amend a commit, or ask an Agent to write it |
 | Remotes | Add, view, or remove remotes; fetch, pull, and choose where to push |
-| Branches & Tags | Create branches and tags, or switch branches |
+| Branches & tags | Create branches and tags, or switch branches |
 | Rebase | Rebase onto a branch or commit, including interactive rebase |
-| Cherry-pick, Revert & Reset | Apply a commit, undo it, or reset to it |
+| Cherry-pick, revert & reset | Apply a commit, undo it, or reset to it |
 | Stash | Save uncommitted changes and restore them |
 | Workspaces | Switch between repositories, Projects, and worktrees |
 
-## Smooth Graph Curves
+## Graph rendering
 
 The Graph draws its lanes with box-drawing characters. When Herdr pane graphics are enabled, it draws antialiased curves instead:
 
@@ -67,12 +65,12 @@ This needs a terminal that supports the Kitty graphics protocol, such as Ghostty
     <td><img src="assets/kitty_graphics_false.png" alt="Graph with Kitty graphics disabled" width="100%"></td>
   </tr>
   <tr>
-    <td>Renders smooth, antialiased curves through Herdr pane graphics. Requires a terminal that supports the Kitty graphics protocol.</td>
-    <td>Renders lanes with box-drawing characters. Works without Kitty graphics support.</td>
+    <td>Antialiased curves</td>
+    <td>Box-drawing characters</td>
   </tr>
 </table>
 
-## Keyboard Shortcuts
+## Keyboard shortcuts
 
 Hold `Alt` to see all keyboard shortcuts.
 
