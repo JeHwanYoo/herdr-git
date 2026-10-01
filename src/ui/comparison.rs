@@ -173,39 +173,43 @@ impl App {
                 .unwrap_or_default();
             (sha.chars().take(7).collect::<String>(), title)
         };
-        let ((before, _), (mut after, after_title), after_is_warning) = match &self.diff.diff_target
-        {
+        let head = || {
+            self.ops
+                .command_context
+                .head_commit
+                .as_deref()
+                .map(endpoint)
+                .unwrap_or_else(|| ("Empty".into(), ""))
+        };
+        let ((before, _), (mut after, after_title)) = match &self.diff.diff_target {
             DiffTarget::CommitAgainstParent { commit, parent } => (
                 parent
                     .as_deref()
                     .map(endpoint)
                     .unwrap_or_else(|| ("Empty".into(), "")),
                 endpoint(commit),
-                false,
             ),
-            DiffTarget::WorkingTreeAgainstRevision { base } => {
-                (endpoint(base), ("Uncommitted".into(), ""), true)
-            }
+            DiffTarget::WorkingTreeAgainstRevision { base } => (
+                if self.ops.command_context.head_commit.is_some() {
+                    endpoint(base)
+                } else {
+                    ("Empty".into(), "")
+                },
+                ("Working Tree".into(), ""),
+            ),
             DiffTarget::WorkingTreeAgainstIndex => {
-                (("Staged".into(), ""), ("Working Tree".into(), ""), false)
+                (("Index".into(), ""), ("Working Tree".into(), ""))
             }
-            DiffTarget::IndexAgainstHead => (
-                self.ops
-                    .command_context
-                    .head_commit
-                    .as_deref()
-                    .map(endpoint)
-                    .unwrap_or_else(|| ("Empty".into(), "")),
-                ("Staged".into(), ""),
-                false,
-            ),
+            DiffTarget::IndexAgainstHead => (head(), ("Index".into(), "")),
         };
         let suffix = match &self.diff.diff_target {
-            DiffTarget::WorkingTreeAgainstIndex => " (Uncommitted)",
+            DiffTarget::WorkingTreeAgainstIndex
+            | DiffTarget::IndexAgainstHead
+            | DiffTarget::WorkingTreeAgainstRevision { .. } => " (Uncommitted)",
             DiffTarget::CommitAgainstParent { .. } if self.ops.command_context.has_changes => {
                 " · Uncommitted"
             }
-            _ => "",
+            DiffTarget::CommitAgainstParent { .. } => "",
         };
         let available = usize::from(width)
             .saturating_sub(Line::from(format!("{before} → {after}{suffix}")).width());
@@ -216,14 +220,7 @@ impl App {
         }
         Line::from(vec![
             Span::styled(format!("{before} → "), theme::hint()),
-            Span::styled(
-                after,
-                if after_is_warning {
-                    theme::warning_text()
-                } else {
-                    theme::hint()
-                },
-            ),
+            Span::styled(after, theme::hint()),
             Span::styled(suffix, theme::warning_text()),
         ])
     }
@@ -674,10 +671,14 @@ mod tests {
             assert!(text.contains(part), "{text}");
         }
         assert!(!text.contains("첫 커밋"), "{text}");
+        app.ops.command_context.head_commit = Some("abcdef123456".into());
         app.diff.diff_target = DiffTarget::WorkingTreeAgainstRevision {
             base: "abcdef123456".into(),
         };
-        assert_eq!(app.comparison_info(80).to_string(), "abcdef1 → Uncommitted");
+        assert_eq!(
+            app.comparison_info(80).to_string(),
+            "abcdef1 → Working Tree (Uncommitted)"
+        );
     }
 
     #[test]
@@ -695,11 +696,24 @@ mod tests {
             "1234567 → abcdef1 · Uncommitted"
         );
         app.diff.diff_target = DiffTarget::WorkingTreeAgainstRevision {
+            base: "4b825dc642cb6eb9a060e54bf8d69288fbee4904".into(),
+        };
+        assert_eq!(
+            app.comparison_info(120).to_string(),
+            "Empty → Working Tree (Uncommitted)"
+        );
+        app.diff.diff_target = DiffTarget::IndexAgainstHead;
+        assert_eq!(
+            app.comparison_info(120).to_string(),
+            "Empty → Index (Uncommitted)"
+        );
+        app.ops.command_context.head_commit = Some("abcdef123456".into());
+        app.diff.diff_target = DiffTarget::WorkingTreeAgainstRevision {
             base: "abcdef123456".into(),
         };
         assert_eq!(
             app.comparison_info(120).to_string(),
-            "abcdef1 → Uncommitted"
+            "abcdef1 → Working Tree (Uncommitted)"
         );
         app.diff.diff_target = DiffTarget::CommitAgainstParent {
             commit: "abcdef123456".into(),
@@ -712,11 +726,13 @@ mod tests {
         app.diff.diff_target = DiffTarget::WorkingTreeAgainstIndex;
         assert_eq!(
             app.comparison_info(120).to_string(),
-            "Staged → Working Tree (Uncommitted)"
+            "Index → Working Tree (Uncommitted)"
         );
         app.diff.diff_target = DiffTarget::IndexAgainstHead;
-        app.ops.command_context.head_commit = Some("abcdef123456".into());
-        assert_eq!(app.comparison_info(120).to_string(), "abcdef1 → Staged");
+        assert_eq!(
+            app.comparison_info(120).to_string(),
+            "abcdef1 → Index (Uncommitted)"
+        );
     }
 
     #[test]
