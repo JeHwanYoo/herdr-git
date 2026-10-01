@@ -34,7 +34,7 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 | Changes | Review changed files, stage or unstage them, and discard tracked changes |
 | Diffs | View changes side by side and compare commits or branches |
 | Graph | Browse and filter commit history with a lane graph |
-| Files | Browse repository files, search file names and contents, and preview files with syntax highlighting |
+| Files | Browse repository files, search file names and contents, and preview files with syntax highlighting, working-tree changes, blame, and line history |
 | Blame & line history | See who changed selected lines and review their history |
 | Copy | Copy selected code with its file path and line numbers |
 | Commit | Create or amend a commit, or ask an Agent to write it |

@@ -446,6 +446,7 @@ pub(super) enum ForegroundRequest {
         generation: ReadGeneration,
         root: PathBuf,
         file: String,
+        new_file: bool,
     },
     AddProject {
         id: RequestId,

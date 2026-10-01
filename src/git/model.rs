@@ -60,6 +60,14 @@ impl Commit {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineChange {
+    pub old_start: usize,
+    pub removed: Vec<String>,
+    pub new_start: usize,
+    pub added: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineHistoryCommit {
     pub sha: String,
     pub author: String,

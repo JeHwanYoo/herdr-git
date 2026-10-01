@@ -7,6 +7,8 @@ use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use unicode_width::UnicodeWidthChar;
 
+use crate::git::LineChange;
+
 use super::theme::{
     ACCENT, DIFF_ADDED_BG, DIFF_REMOVED_BG, HINT, SURFACE_HEADER, SURFACE_INERT, WARNING,
 };
@@ -390,30 +392,100 @@ impl SyntaxHighlighter {
         &self,
         text: &str,
         path: &str,
+        changes: &[LineChange],
         cancelled: &dyn Fn() -> bool,
     ) -> Option<DiffDocument> {
-        let mut highlighter = self
-            .syntax_for_path(path)
+        let syntax = self.syntax_for_path(path);
+        let mut highlighter = syntax.map(|syntax| HighlightLines::new(syntax, &self.theme));
+        let mut before_highlighter = syntax
+            .filter(|_| !changes.is_empty())
             .map(|syntax| HighlightLines::new(syntax, &self.theme));
         let mut document = DiffDocument::default();
+        let mut pending = changes.iter().peekable();
+        let mut old_line = 1;
+        let mut added_until = 0;
         for (index, code) in text.lines().enumerate() {
             if cancelled() {
                 return None;
             }
             let number = index + 1;
+            while let Some(change) = pending.next_if(|change| change.new_start <= number) {
+                push_removed_lines(
+                    &mut document,
+                    change,
+                    &mut before_highlighter,
+                    &self.syntaxes,
+                );
+                old_line = change.old_start + change.removed.len();
+                added_until = change.new_start + change.added;
+            }
+            if number < added_until {
+                let rendered = highlight_numbered_line(
+                    number,
+                    code,
+                    &mut highlighter,
+                    &self.syntaxes,
+                    Some(DIFF_ADDED_BG),
+                );
+                document.push(DiffRow::new(
+                    DiffCell::new(Line::default(), None, None),
+                    DiffCell::new(rendered, Some(number), Some(code.to_owned())),
+                    None,
+                ));
+                continue;
+            }
             let rendered =
                 highlight_numbered_line(number, code, &mut highlighter, &self.syntaxes, None);
+            if before_highlighter.is_some() {
+                highlight_numbered_line(
+                    old_line,
+                    code,
+                    &mut before_highlighter,
+                    &self.syntaxes,
+                    None,
+                );
+            }
             document.push(DiffRow::new(
-                DiffCell::new(Line::default(), None, None),
+                DiffCell::new(Line::default(), Some(old_line), Some(code.to_owned())),
                 DiffCell::new(rendered, Some(number), Some(code.to_owned())),
                 None,
             ));
+            old_line += 1;
+        }
+        for change in pending {
+            push_removed_lines(
+                &mut document,
+                change,
+                &mut before_highlighter,
+                &self.syntaxes,
+            );
         }
         Some(document)
     }
 
     fn syntax_for_path(&self, path: &str) -> Option<&SyntaxReference> {
         self.syntaxes.find_syntax_for_file(path).ok().flatten()
+    }
+}
+
+fn push_removed_lines(
+    document: &mut DiffDocument,
+    change: &LineChange,
+    highlighter: &mut Option<HighlightLines<'_>>,
+    syntaxes: &SyntaxSet,
+) {
+    for (offset, code) in change.removed.iter().enumerate() {
+        let number = change.old_start + offset;
+        let mut rendered =
+            highlight_numbered_line(number, code, highlighter, syntaxes, Some(DIFF_REMOVED_BG));
+        if let Some(gutter) = rendered.spans.first_mut() {
+            gutter.content = " ".repeat(gutter.content.chars().count()).into();
+        }
+        document.push(DiffRow::new(
+            DiffCell::new(Line::default(), Some(number), Some(code.clone())),
+            DiffCell::new(rendered, None, None),
+            None,
+        ));
     }
 }
 

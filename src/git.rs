@@ -17,13 +17,14 @@ use parse::parse_history;
 pub use history::{HISTORY_PAGE_SIZE, HistoryPage, HistorySession};
 pub use model::{
     BlameInfo, BranchStatus, ChangeOverview, ChangeSection, ChangedPath, ChangesComparison, Commit,
-    CommitDetails, CommitRef, CommitRefKind, DiffSummary, DiffTarget, LineHistoryCommit,
-    LocalIdentity, RepositoryFingerprint, ResetContext, ResetTarget, WorkingChange, WorktreeReport,
+    CommitDetails, CommitRef, CommitRefKind, DiffSummary, DiffTarget, LineChange,
+    LineHistoryCommit, LocalIdentity, RepositoryFingerprint, ResetContext, ResetTarget,
+    WorkingChange, WorktreeReport,
 };
 pub use operation::{GitOperation, ResetMode};
 use parse::{
-    parse_blame, parse_blame_range, parse_changes, parse_line_history, parse_numstat,
-    parse_working_changes, parse_worktree_report,
+    parse_blame, parse_blame_range, parse_changes, parse_line_changes, parse_line_history,
+    parse_numstat, parse_working_changes, parse_worktree_report,
 };
 #[cfg(test)]
 use process::cancellable_command_output;
@@ -108,7 +109,7 @@ mod tests {
 
     use super::parse::{parse_iso_time, parse_worktree_report, relative_time};
     use super::{
-        ChangeSection, CommitRefKind, DiffTarget, ReadError, Repository,
+        ChangeSection, CommitRefKind, DiffTarget, LineChange, ReadError, Repository,
         cancellable_command_output, parse_blame, parse_blame_range, parse_changes, parse_history,
         parse_line_history, parse_numstat, summarize_untracked_bytes, summarize_untracked_reader,
         with_read_cancellation_result, worktree_report,
@@ -185,6 +186,67 @@ mod tests {
         fs::write(root.join("target/output"), "build\n").unwrap();
         let files = Repository::discover(&root).unwrap().files().unwrap();
         assert_eq!(files, [".gitignore", "notes.md", "src/main.rs"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn line_changes_place_removed_lines_and_count_added_ones_against_head() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("herdr-line-changes-{unique}"));
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-b", "main"]);
+        run(&root, &["config", "user.name", "Test Author"]);
+        run(&root, &["config", "user.email", "test@example.com"]);
+        fs::write(root.join("file.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "base"]);
+        fs::write(root.join("file.txt"), "one\nTWO\nthree\nextra\n").unwrap();
+        let changes = Repository::discover(&root)
+            .unwrap()
+            .line_changes("file.txt")
+            .unwrap();
+        assert_eq!(
+            changes,
+            [
+                LineChange {
+                    old_start: 2,
+                    removed: vec!["two".to_owned()],
+                    new_start: 2,
+                    added: 1,
+                },
+                LineChange {
+                    old_start: 4,
+                    removed: vec!["four".to_owned()],
+                    new_start: 4,
+                    added: 1,
+                },
+            ]
+        );
+        fs::write(root.join("file.txt"), "one\nthree\nfour\nfive\n").unwrap();
+        let changes = Repository::discover(&root)
+            .unwrap()
+            .line_changes("file.txt")
+            .unwrap();
+        assert_eq!(
+            changes,
+            [
+                LineChange {
+                    old_start: 2,
+                    removed: vec!["two".to_owned()],
+                    new_start: 2,
+                    added: 0,
+                },
+                LineChange {
+                    old_start: 5,
+                    removed: Vec::new(),
+                    new_start: 4,
+                    added: 1,
+                },
+            ]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

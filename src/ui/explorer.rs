@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -13,10 +13,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use unicode_width::UnicodeWidthChar;
 
-use crate::git::ReadError;
+use crate::git::{ChangeSection, ReadError};
 
 use super::diff::{emphasize_diff_line, padded_diff_lines};
 use super::effect::{FilePreview, ForegroundRequest, ReadGeneration, RepositoryFiles, RequestId};
+use super::files::{status_label, status_style};
 use super::overlay::Overlay;
 use super::path_tree::{PathRow, PathRowKind};
 use super::review::{ReviewSide, SelectionSurface};
@@ -261,6 +262,14 @@ impl App {
         self.clear_file_selection();
     }
 
+    fn working_status(&self, path: &str) -> Option<&str> {
+        self.files
+            .changes
+            .iter()
+            .find(|change| change.section != ChangeSection::Commit && change.path == path)
+            .map(|change| change.status.as_str())
+    }
+
     fn request_file_preview(&mut self, file: String) {
         let Some(root) = self.explorer.root.clone() else {
             return;
@@ -275,11 +284,15 @@ impl App {
         self.foreground.reads.file_preview.advance();
         let id = self.foreground.next_id;
         let generation = self.foreground.reads.file_preview.generation;
+        let new_file = self
+            .working_status(&file)
+            .is_some_and(|status| status.starts_with(['?', 'A']));
         let request = ForegroundRequest::FilePreview {
             id,
             generation,
             root: root.clone(),
             file: file.clone(),
+            new_file,
         };
         match self.foreground.request(request) {
             Ok(_) => {
@@ -697,6 +710,13 @@ impl App {
                     KeyCode::PageUp => self.scroll_preview(-page),
                     KeyCode::Home => self.explorer.preview_scroll = 0,
                     KeyCode::End => self.explorer.preview_scroll = usize::MAX,
+                    KeyCode::Char('h')
+                        if self
+                            .effective_selection_on(SelectionSurface::File)
+                            .is_some() =>
+                    {
+                        return false;
+                    }
                     KeyCode::Right | KeyCode::Char('l') => self.scroll_preview_horizontal(step),
                     KeyCode::Left | KeyCode::Char('h') => self.scroll_preview_horizontal(-step),
                     _ => return false,
@@ -723,13 +743,16 @@ impl App {
                 MouseEventKind::ScrollUp => self.move_filter_selection(-1),
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.focus = PaneFocus::Explorer;
-                    if let Some(row) = scrolled_content_row_at(
+                    let rows = result_rows(&self.explorer.filter.results);
+                    if let Some(ResultRow::Result(index)) = scrolled_content_row_at(
                         Some(pointer),
                         self.explorer.tree_area,
-                        self.explorer.filter.results.len(),
+                        rows.len(),
                         self.explorer.filter.cursor.scroll,
-                    ) {
-                        self.explorer.filter.cursor.selected = row;
+                    )
+                    .and_then(|row| rows.get(row))
+                    {
+                        self.explorer.filter.cursor.selected = *index;
                         self.show_selected_result();
                     }
                 }
@@ -850,34 +873,35 @@ impl App {
             return;
         }
         let height = usize::from(list.height);
-        filter.cursor.scroll = viewport_offset(
-            filter.cursor.scroll,
-            filter.cursor.selected,
-            filter.results.len(),
-            height,
-        );
-        let offset = filter.cursor.scroll;
-        let hovered = scrolled_content_row_at(
-            self.shell.mouse_position,
-            list,
-            filter.results.len(),
-            offset,
-        );
-        let items = filter
-            .results
+        let rows = result_rows(&filter.results);
+        let selected_row = rows
+            .iter()
+            .position(|row| *row == ResultRow::Result(filter.cursor.selected))
+            .unwrap_or_default();
+        let mut offset = viewport_offset(filter.cursor.scroll, selected_row, rows.len(), height);
+        if offset == selected_row
+            && let Some(ResultRow::Group(..)) = selected_row.checked_sub(1).map(|row| rows[row])
+        {
+            offset -= 1;
+        }
+        filter.cursor.scroll = offset;
+        let hovered = scrolled_content_row_at(self.shell.mouse_position, list, rows.len(), offset)
+            .filter(|row| matches!(rows[*row], ResultRow::Result(_)));
+        let items = rows
             .iter()
             .enumerate()
             .skip(offset)
             .take(height)
-            .map(|(index, result)| {
-                ListItem::new(search_result_line(result))
-                    .style(theme::hover(Style::default(), hovered == Some(index)))
+            .map(|(index, row)| {
+                let line = match *row {
+                    ResultRow::Group(label, count) => {
+                        Line::styled(counted_title(label, count), theme::section_header())
+                    }
+                    ResultRow::Result(result) => search_result_line(&filter.results[result]),
+                };
+                ListItem::new(line).style(theme::hover(Style::default(), hovered == Some(index)))
             });
-        let selected = filter
-            .cursor
-            .selected
-            .checked_sub(offset)
-            .filter(|row| *row < height);
+        let selected = selected_row.checked_sub(offset).filter(|row| *row < height);
         let mut state = ListState::default().with_selected(selected);
         frame.render_stateful_widget(
             List::new(items)
@@ -938,15 +962,40 @@ impl App {
             self.explorer.rows.len(),
             offset,
         );
-        let items = self
-            .explorer
+        let mut statuses = HashMap::new();
+        let mut changed_directories = HashSet::new();
+        for change in &self.files.changes {
+            if change.section == ChangeSection::Commit {
+                continue;
+            }
+            statuses
+                .entry(change.path.as_str())
+                .or_insert(change.status.as_str());
+            changed_directories.extend(
+                change
+                    .path
+                    .match_indices('/')
+                    .map(|(end, _)| &change.path[..end]),
+            );
+        }
+        let explorer = &self.explorer;
+        let items = explorer
             .rows
             .iter()
             .enumerate()
             .skip(offset)
             .take(height)
             .map(|(index, row)| {
-                ListItem::new(explorer_line(row))
+                let change = match &row.kind {
+                    PathRowKind::Directory { key, .. } => changed_directories
+                        .contains(key.as_str())
+                        .then_some(RowChange::Contains),
+                    PathRowKind::File { index } => explorer
+                        .file_path(*index)
+                        .and_then(|path| statuses.get(path))
+                        .map(|status| RowChange::Status(status)),
+                };
+                ListItem::new(explorer_line(row, change))
                     .style(theme::hover(Style::default(), hovered == Some(index)))
             });
         let selected = self
@@ -996,9 +1045,10 @@ impl App {
         let height = usize::from(inner.height);
         let width = usize::from(inner.width);
         let target = self.explorer.active_match().and_then(|result| {
-            let row = usize::try_from(result.line?.checked_sub(1)?).ok()?;
+            let line = usize::try_from(result.line?).ok()?;
+            let row = self.explorer.preview.document.after_row_for_line(line)?;
             let source = self.explorer.preview.document.after_source(row)?;
-            let gutter = format!("{:>4} ", row + 1).len();
+            let gutter = format!("{line:>4} ").len();
             let columns = display_columns(source, result.match_range.as_ref()?);
             Some((row, gutter + columns.start..gutter + columns.end))
         });
@@ -1057,6 +1107,27 @@ impl App {
             scroll,
         );
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResultRow {
+    Group(&'static str, usize),
+    Result(usize),
+}
+
+fn result_rows(results: &[SearchResult]) -> Vec<ResultRow> {
+    let lines = results
+        .iter()
+        .position(|result| result.match_type == MatchType::Content)
+        .unwrap_or(results.len());
+    let mut rows = Vec::with_capacity(results.len() + 2);
+    for (label, range) in [("Files", 0..lines), ("Lines", lines..results.len())] {
+        if !range.is_empty() {
+            rows.push(ResultRow::Group(label, range.len()));
+            rows.extend(range.map(ResultRow::Result));
+        }
+    }
+    rows
 }
 
 fn search_result_line(result: &SearchResult) -> Line<'static> {
@@ -1122,18 +1193,35 @@ fn style_columns(line: &mut Line<'static>, columns: Range<usize>, style: Style) 
     line.spans = spans;
 }
 
-fn explorer_line(row: &PathRow) -> Line<'static> {
+enum RowChange<'a> {
+    Contains,
+    Status(&'a str),
+}
+
+fn explorer_line(row: &PathRow, change: Option<RowChange<'_>>) -> Line<'static> {
     let indent = "  ".repeat(row.depth);
-    match &row.kind {
-        PathRowKind::Directory { expanded, .. } => Line::from(vec![
+    let mut spans = match &row.kind {
+        PathRowKind::Directory { expanded, .. } => vec![
             Span::styled(
                 format!("{indent}{} ", if *expanded { "▾" } else { "▸" }),
                 theme::hint(),
             ),
             Span::raw(row.label.clone()),
-        ]),
-        PathRowKind::File { .. } => Line::from(format!("{indent}  {}", row.label)),
+        ],
+        PathRowKind::File { .. } => vec![Span::raw(format!("{indent}  {}", row.label))],
+    };
+    match change {
+        Some(RowChange::Contains) => spans.push(Span::styled(" •", status_style("M"))),
+        Some(RowChange::Status(status)) => {
+            let style = status_style(status);
+            if let Some(name) = spans.last_mut() {
+                name.style = Style::default().fg(style.fg.unwrap_or_default());
+            }
+            spans.push(Span::styled(format!(" {}", status_label(status)), style));
+        }
+        None => {}
     }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -1149,7 +1237,7 @@ mod tests {
     use super::super::review::SelectionSurface;
     use super::super::shell::{ActiveTab, PaneFocus};
     use super::super::test_support::{
-        committed_change, find_text, intercept_foreground, press, render,
+        committed_change, find_text, find_text_in_row, intercept_foreground, press, render,
     };
     use super::super::{App, PendingClipboard, theme};
 
@@ -1223,19 +1311,32 @@ mod tests {
     }
 
     #[test]
-    fn visual_selection_in_the_preview_copies_lines_with_their_numbers() {
+    fn preview_marks_working_tree_changes_and_selected_lines_reach_copy_and_history() {
         let (root, mut app) = committed_change("explorer-copy");
         app.set_tab(ActiveTab::Files);
         wait_for_explorer(&mut app);
+        let buffer = render(&mut app, 100, 30);
+        assert!(find_text(&buffer, "tracked.txt M").is_some());
         press(&mut app, KeyCode::Down);
         wait_for_explorer(&mut app);
         assert_eq!(app.explorer.preview_path(), Some("tracked.txt"));
+        let buffer = render(&mut app, 100, 30);
+        let (x, y) = find_text(&buffer, "     two").expect("removed line");
+        assert_eq!(buffer[(x + 5, y)].bg, theme::DIFF_REMOVED_BG);
+        let (x, y) = find_text(&buffer, "   2 two changed").expect("added line");
+        assert_eq!(buffer[(x + 5, y)].bg, theme::DIFF_ADDED_BG);
+        assert!(find_text(&buffer, "   3 three").is_some());
+
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Char('v'));
         press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
         let buffer = render(&mut app, 100, 30);
         assert!(find_text(&buffer, "tracked.txt:1–2").is_some());
-        assert!(find_text(&buffer, "y Yank · Esc Cancel").is_some());
+        assert!(find_text(&buffer, "y Yank · h History · Esc Cancel").is_some());
+        let (_, target) = app.line_history_target().expect("history target");
+        assert_eq!(target.ranges, [(1, 1)]);
+        assert_eq!(target.revision, None);
         press(&mut app, KeyCode::Char('y'));
         assert!(matches!(app.overlay, Overlay::CopySelection(_)));
         press(&mut app, KeyCode::Enter);
@@ -1244,6 +1345,10 @@ mod tests {
         };
         assert_eq!(text, "File: tracked.txt\nLines: 1–2\n\none\ntwo changed");
 
+        press(&mut app, KeyCode::Char('h'));
+        assert!(matches!(app.overlay, Overlay::LineHistory(_)));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.overlay, Overlay::None));
         press(&mut app, KeyCode::Esc);
         assert!(app.effective_selection_on(SelectionSurface::File).is_none());
         press(&mut app, KeyCode::Esc);
@@ -1291,6 +1396,11 @@ mod tests {
         let buffer = render(&mut app, 120, 40);
         assert!(find_text(&buffer, "/ answer").is_some());
         assert!(find_text(&buffer, "Matches · 2").is_some());
+        let (files_x, files_y) = find_text(&buffer, "Files · 1").expect("file group");
+        assert!(find_text_in_row(&buffer, files_y + 1, "answer.md").is_some());
+        let (lines_x, lines_y) = find_text(&buffer, "Lines · 1").expect("line group");
+        assert_eq!(lines_x, files_x);
+        assert!(find_text_in_row(&buffer, lines_y + 1, "src/lib.rs:30").is_some());
         assert!(matches!(app.overlay, Overlay::FileFilter));
         let names = app
             .explorer

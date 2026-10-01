@@ -1,5 +1,7 @@
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
+
+use crate::git::LineChange;
 
 use super::refresh::{highlight_diff, refresh_changes};
 use super::*;
@@ -381,6 +383,7 @@ pub(in crate::ui) fn run_foreground_job(
             generation,
             root,
             file,
+            new_file,
         } => {
             let cancelled =
                 || cancellations.file_preview.load(Ordering::Acquire) != generation.get();
@@ -391,6 +394,7 @@ pub(in crate::ui) fn run_foreground_job(
                     read_file_preview(
                         &root,
                         &file,
+                        new_file,
                         syntax.get_or_init(SyntaxHighlighter::new),
                         &cancelled,
                     )
@@ -552,11 +556,18 @@ const FILE_PREVIEW_BYTE_LIMIT: u64 = 1024 * 1024;
 fn read_file_preview(
     root: &Path,
     file: &str,
+    new_file: bool,
     highlighter: &SyntaxHighlighter,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<FilePreview, String> {
     let path = root.join(file);
-    let metadata = fs::symlink_metadata(&path).map_err(|error| format!("{file}: {error}"))?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(FilePreview::notice("Deleted in the working tree"));
+        }
+        Err(error) => return Err(format!("{file}: {error}")),
+    };
     if metadata.file_type().is_symlink() {
         let target = fs::read_link(&path).map_err(|error| format!("{file}: {error}"))?;
         return Ok(FilePreview::notice(format!(
@@ -583,8 +594,21 @@ fn read_file_preview(
     if bytes.contains(&0) {
         return Ok(FilePreview::notice("Binary file"));
     }
+    let text = String::from_utf8_lossy(&bytes);
+    let changes = if new_file {
+        vec![LineChange {
+            old_start: 1,
+            removed: Vec::new(),
+            new_start: 1,
+            added: text.lines().count(),
+        }]
+    } else {
+        Repository::at_root(root.to_owned())
+            .line_changes(file)
+            .unwrap_or_default()
+    };
     highlighter
-        .highlight_file_cancellable(&String::from_utf8_lossy(&bytes), file, cancelled)
+        .highlight_file_cancellable(&text, file, &changes, cancelled)
         .map(|document| FilePreview {
             document,
             notice: None,

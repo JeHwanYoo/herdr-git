@@ -339,23 +339,24 @@ impl App {
         let selection = self.effective_selection_on(surface)?;
         let (file, _, shown) = self.selection_lines_on(surface)?;
         let target = match surface {
-            SelectionSurface::Changes => &self.diff.diff_target,
+            SelectionSurface::Changes => Some(&self.diff.diff_target),
             SelectionSurface::Preview => {
-                &self.inspect.commit_preview_loaded_target.as_ref()?.target
+                Some(&self.inspect.commit_preview_loaded_target.as_ref()?.target)
             }
-            SelectionSurface::File => return None,
+            SelectionSurface::File => None,
         };
         let (side, revision) = match (target, selection.side) {
-            (DiffTarget::CommitAgainstParent { commit, .. }, ReviewSide::After) => {
+            (None, _) => (ReviewSide::Before, None),
+            (Some(DiffTarget::CommitAgainstParent { commit, .. }), ReviewSide::After) => {
                 (ReviewSide::After, Some(commit.clone()))
             }
-            (DiffTarget::CommitAgainstParent { parent, .. }, ReviewSide::Before) => {
+            (Some(DiffTarget::CommitAgainstParent { parent, .. }), ReviewSide::Before) => {
                 (ReviewSide::Before, Some(parent.clone()?))
             }
-            (DiffTarget::WorkingTreeAgainstRevision { base }, _) => {
+            (Some(DiffTarget::WorkingTreeAgainstRevision { base }), _) => {
                 (ReviewSide::Before, Some(base.clone()))
             }
-            (DiffTarget::WorkingTreeAgainstIndex | DiffTarget::IndexAgainstHead, _) => {
+            (Some(DiffTarget::WorkingTreeAgainstIndex | DiffTarget::IndexAgainstHead), _) => {
                 (ReviewSide::Before, None)
             }
         };
@@ -504,8 +505,7 @@ impl App {
             ReviewSide::Before => before,
             ReviewSide::After => after,
         };
-        let history = surface != SelectionSurface::File;
-        draw_selection_hint(frame, area, &selection, scroll, history);
+        draw_selection_hint(frame, area, &selection, scroll);
     }
 
     pub(super) fn handle_copy_selection(&mut self, input: &Event) {
@@ -685,7 +685,6 @@ fn draw_selection_hint(
     area: Rect,
     selection: &CodeSelection,
     scroll: usize,
-    history: bool,
 ) {
     let mut visible = selection
         .rows()
@@ -695,21 +694,14 @@ fn draw_selection_hint(
         return;
     };
     let last = visible.last().unwrap_or(first);
-    let mut keys = vec![
+    let keys = Line::from(vec![
         Span::styled("y", theme::accent_bold()),
         Span::styled(" Yank · ", theme::hint()),
-    ];
-    if history {
-        keys.extend([
-            Span::styled("h", theme::accent_bold()),
-            Span::styled(" History · ", theme::hint()),
-        ]);
-    }
-    keys.extend([
+        Span::styled("h", theme::accent_bold()),
+        Span::styled(" History · ", theme::hint()),
         Span::styled("Esc", theme::accent_bold()),
         Span::styled(" Cancel", theme::hint()),
     ]);
-    let keys = Line::from(keys);
     let (width, height) = (keys.width() as u16 + 4, 3);
     let y = if last + 1 + height <= area.bottom() {
         last + 1

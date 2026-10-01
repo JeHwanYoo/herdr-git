@@ -288,6 +288,23 @@ impl Repository {
         })
     }
 
+    pub fn line_changes(&self, path: &str) -> Result<Vec<LineChange>, String> {
+        git(
+            &self.root,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--no-renames",
+                "--unified=0",
+                "HEAD",
+                "--",
+                path,
+            ],
+        )
+        .map(|output| parse_line_changes(&output))
+    }
+
     fn untracked_paths(&self) -> Result<Vec<String>, String> {
         git(
             &self.root,
