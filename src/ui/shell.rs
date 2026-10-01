@@ -200,7 +200,7 @@ impl App {
             AppShortcut::Commands => self.open_commands(),
             AppShortcut::Workspace => self.open_workspace_picker(),
             AppShortcut::FilesSearch if self.shell.active_tab == ActiveTab::Files => {
-                self.open_explorer_filter();
+                self.open_file_filter();
             }
             AppShortcut::FilesSearch => self.open_files_search(),
             AppShortcut::Actions if self.shell.active_tab == ActiveTab::History => {
@@ -315,6 +315,9 @@ impl App {
             self.focus = default_focus(tab);
         }
         if tab != ActiveTab::History && matches!(self.overlay, Overlay::GraphFilter) {
+            self.overlay = Overlay::None;
+        }
+        if tab != ActiveTab::Files && matches!(self.overlay, Overlay::FileFilter) {
             self.overlay = Overlay::None;
         }
     }

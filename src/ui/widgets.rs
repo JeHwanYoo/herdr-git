@@ -314,6 +314,24 @@ pub(super) fn pane_block<'a>(title: impl Into<Line<'a>>, focused: bool) -> Block
     }
 }
 
+pub(super) fn draw_filter_bar(frame: &mut Frame<'_>, area: Rect, query: &TextField, active: bool) {
+    let mut spans = vec![Span::raw(format!("/ {}", query.text))];
+    if active {
+        spans.push(theme::cursor_span(query.cursor_started.elapsed()));
+    }
+    let style = if active {
+        theme::warning_text()
+    } else {
+        Style::default()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(spans))
+            .style(style)
+            .block(Block::default().borders(Borders::ALL).title("Filter")),
+        area,
+    );
+}
+
 pub(super) fn chord(modifiers: KeyModifiers) -> bool {
     modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
 }

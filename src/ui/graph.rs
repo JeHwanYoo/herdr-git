@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, List, ListItem, ListState, Paragraph, ScrollbarOrientation, ScrollbarState,
+    List, ListItem, ListState, Paragraph, ScrollbarOrientation, ScrollbarState,
 };
 
 use crate::git::{ChangeSection, Commit, CommitRef, CommitRefKind, DiffTarget, WorkingChange};
@@ -921,23 +921,11 @@ impl App {
 
     pub(super) fn draw_graph_filter(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.graph.filter_area = area;
-        let active = matches!(self.overlay, Overlay::GraphFilter);
-        let mut spans = vec![Span::raw(format!("/ {}", self.graph.query.text))];
-        if active {
-            spans.push(theme::cursor_span(
-                self.graph.query.cursor_started.elapsed(),
-            ));
-        }
-        let style = if active {
-            theme::warning_text()
-        } else {
-            Style::default()
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(spans))
-                .style(style)
-                .block(Block::default().borders(Borders::ALL).title("Filter")),
+        widgets::draw_filter_bar(
+            frame,
             area,
+            &self.graph.query,
+            matches!(self.overlay, Overlay::GraphFilter),
         );
     }
 

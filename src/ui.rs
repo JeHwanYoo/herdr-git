@@ -363,9 +363,6 @@ impl App {
         if self.handle_comparison_controls(&input) {
             return Ok(false);
         }
-        if self.shell.active_tab == ActiveTab::Files && self.handle_explorer_filter(&input) {
-            return Ok(false);
-        }
         match input {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if self.handle_shortcut(key) || self.handle_workspaces_key(key) {

@@ -30,7 +30,7 @@ impl App {
         self.graph.clear();
         self.end_scrollbar_drag(ScrollbarOwner::History);
         self.inspect.details = None;
-        if matches!(self.overlay, Overlay::GraphFilter) {
+        if matches!(self.overlay, Overlay::GraphFilter | Overlay::FileFilter) {
             self.overlay = Overlay::None;
         }
         self.shell.error = None;
@@ -71,7 +71,7 @@ impl App {
         self.graph.clear();
         self.end_scrollbar_drag(ScrollbarOwner::History);
         self.inspect.details = None;
-        if matches!(self.overlay, Overlay::GraphFilter) {
+        if matches!(self.overlay, Overlay::GraphFilter | Overlay::FileFilter) {
             self.overlay = Overlay::None;
         }
         self.files.clear();

@@ -3,7 +3,9 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -15,13 +17,14 @@ use crate::git::ReadError;
 
 use super::diff::{emphasize_diff_line, padded_diff_lines};
 use super::effect::{FilePreview, ForegroundRequest, ReadGeneration, RepositoryFiles, RequestId};
+use super::overlay::Overlay;
 use super::path_tree::{PathRow, PathRowKind};
 use super::review::{ReviewSide, SelectionSurface};
 use super::shell::PaneFocus;
 use super::syntax::DiffDocument;
 use super::widgets::{
-    self, ListCursor, PickerEdit, PickerOutcome, PickerState, TextField, counted_title,
-    picker_edit, scrolled_content_row_at, update_picker, viewport_offset,
+    self, ListCursor, TextEdit, TextField, chord, counted_title, scrolled_content_row_at,
+    viewport_offset,
 };
 use super::{App, theme};
 use search::{MatchType, SearchResult, SearchService};
@@ -48,7 +51,8 @@ pub(super) struct ExplorerState {
     preview_scroll: usize,
     preview_horizontal_scroll: usize,
     error: Option<String>,
-    filter: Option<ExplorerFilter>,
+    filter: ExplorerFilter,
+    filter_area: Rect,
     search: Option<SearchService>,
     reveal_match: bool,
     tree_pane: Rect,
@@ -68,8 +72,16 @@ struct ExplorerFilter {
 }
 
 impl ExplorerFilter {
+    fn applied(&self) -> bool {
+        !self.query.text.trim().is_empty()
+    }
+
     fn selected(&self) -> Option<&SearchResult> {
         self.results.get(self.cursor.selected)
+    }
+
+    fn move_by(&mut self, delta: isize) {
+        self.cursor.move_by(delta, self.results.len());
     }
 }
 
@@ -131,16 +143,18 @@ impl ExplorerState {
     }
 
     fn active_file(&self) -> Option<&str> {
-        match &self.filter {
-            Some(filter) => filter.selected().map(|result| result.path.as_str()),
-            None => self.selected_file(),
+        if self.filter.applied() {
+            self.filter.selected().map(|result| result.path.as_str())
+        } else {
+            self.selected_file()
         }
     }
 
     fn active_match(&self) -> Option<&SearchResult> {
         self.filter
-            .as_ref()?
-            .selected()
+            .applied()
+            .then(|| self.filter.selected())
+            .flatten()
             .filter(|result| result.match_type == MatchType::Content)
     }
 
@@ -151,9 +165,7 @@ impl ExplorerState {
     }
 
     pub(super) fn search_pending(&self) -> bool {
-        self.filter
-            .as_ref()
-            .is_some_and(|filter| filter.due.is_some() || filter.searching)
+        self.filter.due.is_some() || self.filter.searching
     }
 
     fn reset(&mut self, root: Option<PathBuf>) {
@@ -334,21 +346,19 @@ impl App {
         }
     }
 
-    pub(super) fn open_explorer_filter(&mut self) {
+    pub(super) fn open_file_filter(&mut self) {
         if self.repository.is_none() {
             return;
         }
-        self.focus = PaneFocus::Explorer;
-        if self.explorer.filter.is_none() {
-            self.explorer.filter = Some(ExplorerFilter::default());
-        }
+        self.explorer.filter.query.cursor_started = Instant::now();
+        self.overlay = Overlay::FileFilter;
     }
 
-    fn close_explorer_filter(&mut self) {
+    fn clear_file_filter(&mut self) {
         if let Some(search) = &self.explorer.search {
             search.cancel();
         }
-        self.explorer.filter = None;
+        self.explorer.filter = ExplorerFilter::default();
         self.explorer.reveal_match = false;
         self.focus = PaneFocus::Explorer;
         if let Some(file) = self.explorer.selected_file().map(str::to_owned) {
@@ -356,74 +366,67 @@ impl App {
         }
     }
 
+    fn edit_file_filter(&mut self, edit: TextEdit) {
+        let filter = &mut self.explorer.filter;
+        if !filter.query.edit(edit) {
+            return;
+        }
+        if filter.applied() {
+            filter.cursor = ListCursor::default();
+            filter.due = Some(Instant::now() + SEARCH_DEBOUNCE);
+            filter.searching = true;
+        } else {
+            let query = filter.query.clone();
+            self.clear_file_filter();
+            self.explorer.filter.query = query;
+        }
+    }
+
+    fn move_filter_selection(&mut self, delta: isize) {
+        self.explorer.filter.move_by(delta);
+        self.show_selected_result();
+    }
+
+    pub(super) fn handle_file_filter(&mut self, input: &Event) -> bool {
+        let page = isize::try_from(self.explorer.tree_area.height.max(1)).unwrap_or(isize::MAX);
+        match input {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = Overlay::None;
+                        self.clear_file_filter();
+                    }
+                    KeyCode::Enter => {
+                        self.overlay = Overlay::None;
+                        self.focus = PaneFocus::Explorer;
+                    }
+                    KeyCode::Down => self.move_filter_selection(1),
+                    KeyCode::Up => self.move_filter_selection(-1),
+                    KeyCode::PageDown => self.move_filter_selection(page),
+                    KeyCode::PageUp => self.move_filter_selection(-page),
+                    KeyCode::Backspace => self.edit_file_filter(TextEdit::Backspace),
+                    KeyCode::Char(character) if !chord(key.modifiers) => {
+                        self.edit_file_filter(TextEdit::Insert(character));
+                    }
+                    _ => {}
+                }
+                true
+            }
+            Event::Key(_) => true,
+            Event::Paste(text) => {
+                self.edit_file_filter(TextEdit::Paste(text.clone()));
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn show_selected_result(&mut self) {
-        let Some(result) = self
-            .explorer
-            .filter
-            .as_ref()
-            .and_then(ExplorerFilter::selected)
-            .cloned()
-        else {
+        let Some(result) = self.explorer.filter.selected().cloned() else {
             return;
         };
         self.explorer.reveal_match = result.line.is_some();
         self.show_file_preview(result.path);
-    }
-
-    pub(super) fn handle_explorer_filter(&mut self, input: &Event) -> bool {
-        let pointer_in_pane = match input {
-            Event::Mouse(mouse) => self
-                .explorer
-                .tree_pane
-                .contains((mouse.column, mouse.row).into()),
-            _ => false,
-        };
-        if matches!(input, Event::Mouse(_)) && !pointer_in_pane {
-            return false;
-        }
-        if !pointer_in_pane && self.focus != PaneFocus::Explorer {
-            return false;
-        }
-        let list_area = self.explorer.tree_area;
-        let Some(filter) = self.explorer.filter.as_mut() else {
-            return false;
-        };
-        let Some(edit) = picker_edit(input, list_area, filter.cursor.scroll, true) else {
-            return pointer_in_pane;
-        };
-        let len = filter.results.len();
-        if let PickerEdit::ClickRow(row) = edit {
-            self.focus = PaneFocus::Explorer;
-            if row < len {
-                filter.cursor.selected = row;
-                self.show_selected_result();
-            }
-            return true;
-        }
-        let outcome = update_picker(
-            PickerState {
-                query: Some(&mut filter.query),
-                cursor: &mut filter.cursor,
-                len,
-                page: usize::from(list_area.height.max(1)),
-            },
-            edit,
-        );
-        match outcome {
-            PickerOutcome::Moved => self.show_selected_result(),
-            PickerOutcome::Filtered => {
-                filter.due = Some(Instant::now() + SEARCH_DEBOUNCE);
-                filter.searching = true;
-            }
-            PickerOutcome::Activate => {
-                if self.explorer.active_file().is_some() {
-                    self.focus = PaneFocus::FilePreview;
-                }
-            }
-            PickerOutcome::Cancel => self.close_explorer_filter(),
-            PickerOutcome::Unchanged => {}
-        }
-        true
     }
 
     pub(super) fn tick_explorer_search(&mut self) -> bool {
@@ -435,9 +438,7 @@ impl App {
             .as_ref()
             .and_then(SearchService::try_recv)
         {
-            let Some(filter) = self.explorer.filter.as_mut() else {
-                continue;
-            };
+            let filter = &mut self.explorer.filter;
             if filter.generation != Some(update.generation)
                 || self.explorer.root.as_ref() != Some(&update.root)
             {
@@ -465,9 +466,7 @@ impl App {
     }
 
     fn start_due_search(&mut self) -> bool {
-        let Some(filter) = self.explorer.filter.as_mut() else {
-            return false;
-        };
+        let filter = &mut self.explorer.filter;
         if filter.due.is_none_or(|due| Instant::now() < due) {
             return false;
         }
@@ -642,8 +641,29 @@ impl App {
     }
 
     pub(super) fn handle_explorer_key(&mut self, key: KeyEvent) -> bool {
+        if key.code == KeyCode::Char('/')
+            && matches!(self.focus, PaneFocus::Explorer | PaneFocus::FilePreview)
+        {
+            self.open_file_filter();
+            return true;
+        }
         match self.focus {
-            PaneFocus::Explorer if self.explorer.filter.is_some() => return false,
+            PaneFocus::Explorer if self.explorer.filter.applied() => {
+                let page = self.explorer_page();
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => self.move_filter_selection(1),
+                    KeyCode::Up | KeyCode::Char('k') => self.move_filter_selection(-1),
+                    KeyCode::PageDown => self.move_filter_selection(page),
+                    KeyCode::PageUp => self.move_filter_selection(-page),
+                    KeyCode::Home => self.move_filter_selection(isize::MIN),
+                    KeyCode::End => self.move_filter_selection(isize::MAX),
+                    KeyCode::Enter if self.explorer.active_file().is_some() => {
+                        self.focus = PaneFocus::FilePreview;
+                    }
+                    KeyCode::Esc => self.clear_file_filter(),
+                    _ => return false,
+                }
+            }
             PaneFocus::Explorer => match key.code {
                 KeyCode::Down | KeyCode::Char('j') => self.move_explorer_selection(1),
                 KeyCode::Up | KeyCode::Char('k') => self.move_explorer_selection(-1),
@@ -654,7 +674,6 @@ impl App {
                 KeyCode::Right => self.expand_or_enter(),
                 KeyCode::Left => self.collapse_or_leave(),
                 KeyCode::Enter => self.activate_explorer_row(),
-                KeyCode::Char('/') => self.open_explorer_filter(),
                 KeyCode::Char(' ') => {
                     if let Some(PathRowKind::Directory { key, expanded }) =
                         self.explorer.selected_row().map(|row| row.kind.clone())
@@ -692,7 +711,33 @@ impl App {
         let pointer = (mouse.column, mouse.row);
         let wheel = PREVIEW_WHEEL_LINES as isize;
         let step = PREVIEW_HORIZONTAL_STEP as isize;
-        if self.explorer.filter.is_none() && self.explorer.tree_area.contains(pointer.into()) {
+        if self.explorer.filter_area.contains(pointer.into())
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        {
+            self.open_file_filter();
+            return true;
+        }
+        if self.explorer.filter.applied() && self.explorer.tree_area.contains(pointer.into()) {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => self.move_filter_selection(1),
+                MouseEventKind::ScrollUp => self.move_filter_selection(-1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.focus = PaneFocus::Explorer;
+                    if let Some(row) = scrolled_content_row_at(
+                        Some(pointer),
+                        self.explorer.tree_area,
+                        self.explorer.filter.results.len(),
+                        self.explorer.filter.cursor.scroll,
+                    ) {
+                        self.explorer.filter.cursor.selected = row;
+                        self.show_selected_result();
+                    }
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        if self.explorer.tree_area.contains(pointer.into()) {
             match mouse.kind {
                 MouseEventKind::ScrollDown => self.move_explorer_selection(1),
                 MouseEventKind::ScrollUp => self.move_explorer_selection(-1),
@@ -756,8 +801,8 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(panes[0]);
-        if self.explorer.filter.is_some() {
-            self.draw_explorer_filter(frame, left[0]);
+        if self.explorer.filter.applied() {
+            self.draw_filter_results(frame, left[0]);
         } else {
             self.draw_explorer_tree(frame, left[0]);
         }
@@ -765,37 +810,32 @@ impl App {
         self.draw_file_preview(frame, panes[1]);
     }
 
-    fn draw_explorer_filter(&mut self, frame: &mut Frame<'_>, area: Rect) {
+    pub(super) fn draw_file_filter(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        self.explorer.filter_area = area;
+        widgets::draw_filter_bar(
+            frame,
+            area,
+            &self.explorer.filter.query,
+            matches!(self.overlay, Overlay::FileFilter),
+        );
+    }
+
+    fn draw_filter_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.explorer.tree_pane = area;
         let focused = self.focus == PaneFocus::Explorer;
-        let Some(filter) = self.explorer.filter.as_mut() else {
-            return;
-        };
-        let mut title = counted_title("Filter", filter.results.len());
+        let filter = &mut self.explorer.filter;
+        let mut title = counted_title("Matches", filter.results.len());
         if filter.searching {
             title.push_str(" · Searching…");
         }
         frame.render_widget(widgets::pane_block(title, focused), area);
-        let inner = Block::default().borders(Borders::ALL).inner(area);
-        let regions = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(inner);
-        let mut input = vec![
-            Span::styled("Filter: ", theme::hint()),
-            Span::raw(filter.query.text.clone()),
-        ];
-        if focused {
-            input.push(theme::cursor_span(filter.query.cursor_started.elapsed()));
-        }
-        frame.render_widget(Paragraph::new(Line::from(input)), regions[0]);
-        let list = regions[1];
+        let list = Block::default().borders(Borders::ALL).inner(area);
         self.explorer.tree_area = list;
         let message = if let Some(error) = &filter.error {
             Some((error.as_str(), theme::error_text()))
-        } else if filter.query.text.trim().is_empty() {
-            Some(("Type to search file names and contents", theme::hint()))
-        } else if filter.results.is_empty() && !filter.searching {
+        } else if filter.results.is_empty() && filter.searching {
+            Some(("Searching…", theme::hint()))
+        } else if filter.results.is_empty() {
             Some(("No matches", theme::hint()))
         } else {
             None
@@ -1249,12 +1289,12 @@ mod tests {
         type_text(&mut app, "answer");
         wait_for_search(&mut app);
         let buffer = render(&mut app, 120, 40);
-        assert!(find_text(&buffer, "Filter: answer").is_some());
+        assert!(find_text(&buffer, "/ answer").is_some());
+        assert!(find_text(&buffer, "Matches · 2").is_some());
+        assert!(matches!(app.overlay, Overlay::FileFilter));
         let names = app
             .explorer
             .filter
-            .as_ref()
-            .unwrap()
             .results
             .iter()
             .map(|result| match result.line {
@@ -1275,9 +1315,17 @@ mod tests {
         assert_ne!(buffer[(x + 12, y)].bg, theme::WARNING);
         assert_ne!(buffer[(x + 19, y)].bg, theme::WARNING);
 
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(app.explorer.filter.applied());
+        press(&mut app, KeyCode::Char('k'));
+        wait_for_explorer(&mut app);
+        assert_eq!(app.explorer.preview_path(), Some("answer.md"));
+
         press(&mut app, KeyCode::Esc);
-        assert!(app.explorer.filter.is_none());
+        assert!(!app.explorer.filter.applied());
         assert_eq!(labels(&app), tree);
+        assert!(find_text(&render(&mut app, 120, 40), "/ answer").is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
