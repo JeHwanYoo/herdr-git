@@ -391,24 +391,25 @@ impl SyntaxHighlighter {
         text: &str,
         path: &str,
         cancelled: &dyn Fn() -> bool,
-    ) -> Option<Vec<Line<'static>>> {
+    ) -> Option<DiffDocument> {
         let mut highlighter = self
             .syntax_for_path(path)
             .map(|syntax| HighlightLines::new(syntax, &self.theme));
-        let mut lines = Vec::new();
+        let mut document = DiffDocument::default();
         for (index, code) in text.lines().enumerate() {
             if cancelled() {
                 return None;
             }
-            lines.push(highlight_numbered_line(
-                index + 1,
-                code,
-                &mut highlighter,
-                &self.syntaxes,
+            let number = index + 1;
+            let rendered =
+                highlight_numbered_line(number, code, &mut highlighter, &self.syntaxes, None);
+            document.push(DiffRow::new(
+                DiffCell::new(Line::default(), None, None),
+                DiffCell::new(rendered, Some(number), Some(code.to_owned())),
                 None,
             ));
         }
-        Some(lines)
+        Some(document)
     }
 
     fn syntax_for_path(&self, path: &str) -> Option<&SyntaxReference> {

@@ -559,13 +559,13 @@ fn read_file_preview(
     let metadata = fs::symlink_metadata(&path).map_err(|error| format!("{file}: {error}"))?;
     if metadata.file_type().is_symlink() {
         let target = fs::read_link(&path).map_err(|error| format!("{file}: {error}"))?;
-        return Ok(FilePreview::Notice(format!(
+        return Ok(FilePreview::notice(format!(
             "Symbolic link to {}",
             target.display()
         )));
     }
     if !metadata.is_file() {
-        return Ok(FilePreview::Notice("Not a regular file".to_owned()));
+        return Ok(FilePreview::notice("Not a regular file"));
     }
     let mut bytes = Vec::new();
     fs::File::open(&path)
@@ -576,15 +576,18 @@ fn read_file_preview(
         })
         .map_err(|error| format!("{file}: {error}"))?;
     if bytes.len() as u64 > FILE_PREVIEW_BYTE_LIMIT {
-        return Ok(FilePreview::Notice(
-            "File is larger than 1 MiB and is not previewed".to_owned(),
+        return Ok(FilePreview::notice(
+            "File is larger than 1 MiB and is not previewed",
         ));
     }
     if bytes.contains(&0) {
-        return Ok(FilePreview::Notice("Binary file".to_owned()));
+        return Ok(FilePreview::notice("Binary file"));
     }
     highlighter
         .highlight_file_cancellable(&String::from_utf8_lossy(&bytes), file, cancelled)
-        .map(FilePreview::Text)
+        .map(|document| FilePreview {
+            document,
+            notice: None,
+        })
         .ok_or_else(|| GIT_READ_CANCELLED.to_owned())
 }

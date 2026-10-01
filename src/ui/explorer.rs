@@ -10,10 +10,12 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 
 use crate::git::ReadError;
 
-use super::diff::horizontal_line_slice;
+use super::diff::{emphasize_diff_line, padded_diff_lines};
 use super::effect::{FilePreview, ForegroundRequest, ReadGeneration, RepositoryFiles, RequestId};
 use super::path_tree::{PathRow, PathRowKind};
+use super::review::{ReviewSide, SelectionSurface};
 use super::shell::PaneFocus;
+use super::syntax::DiffDocument;
 use super::widgets::{self, counted_title, scrolled_content_row_at, viewport_offset};
 use super::{App, theme};
 
@@ -30,7 +32,8 @@ pub(super) struct ExplorerState {
     scroll: usize,
     list_read: Option<ListRead>,
     preview_read: Option<PreviewRead>,
-    preview: Option<(String, FilePreview)>,
+    preview_file: Option<String>,
+    preview: FilePreview,
     preview_scroll: usize,
     preview_horizontal_scroll: usize,
     error: Option<String>,
@@ -89,6 +92,16 @@ impl ExplorerState {
                 .position(|row| self.row_identity(row).as_deref() == Some(identity.as_str()))
         });
         self.selected = position.unwrap_or(self.selected.min(self.rows.len().saturating_sub(1)));
+    }
+
+    pub(super) fn preview_document(&self) -> &DiffDocument {
+        &self.preview.document
+    }
+
+    pub(super) fn preview_path(&self) -> Option<&str> {
+        self.preview_file
+            .as_deref()
+            .filter(|file| self.selected_file() == Some(*file))
     }
 
     fn reset(&mut self, root: Option<PathBuf>) {
@@ -179,22 +192,21 @@ impl App {
     fn clear_file_preview(&mut self) {
         self.foreground.reads.file_preview.advance();
         self.explorer.preview_read = None;
-        self.explorer.preview = None;
+        self.explorer.preview_file = None;
+        self.explorer.preview = FilePreview::default();
+        self.clear_file_selection();
     }
 
     fn request_file_preview(&mut self, file: String) {
         let Some(root) = self.explorer.root.clone() else {
             return;
         };
-        if self
-            .explorer
-            .preview
-            .as_ref()
-            .is_some_and(|(shown, _)| *shown != file)
-        {
-            self.explorer.preview = None;
+        if self.explorer.preview_file.as_ref() != Some(&file) {
+            self.explorer.preview_file = None;
+            self.explorer.preview = FilePreview::default();
             self.explorer.preview_scroll = 0;
             self.explorer.preview_horizontal_scroll = 0;
+            self.clear_file_selection();
         }
         self.foreground.reads.file_preview.advance();
         let id = self.foreground.next_id;
@@ -242,9 +254,10 @@ impl App {
         let preview = match result {
             Ok(preview) => preview,
             Err(ReadError::Cancelled) => return,
-            Err(ReadError::Diagnostic(error)) => FilePreview::Notice(error),
+            Err(ReadError::Diagnostic(error)) => FilePreview::notice(error),
         };
-        self.explorer.preview = Some((file, preview));
+        self.explorer.preview_file = Some(file);
+        self.explorer.preview = preview;
     }
 
     fn select_explorer_row(&mut self, index: usize) {
@@ -253,11 +266,7 @@ impl App {
         }
         self.explorer.selected = index.min(self.explorer.rows.len() - 1);
         if let Some(file) = self.explorer.selected_file().map(str::to_owned) {
-            let shown = self
-                .explorer
-                .preview
-                .as_ref()
-                .is_some_and(|(path, _)| *path == file);
+            let shown = self.explorer.preview_file.as_ref() == Some(&file);
             let loading = self
                 .explorer
                 .preview_read
@@ -346,6 +355,57 @@ impl App {
             .saturating_add_signed(delta);
     }
 
+    fn file_preview_row_at(&self, pointer: (u16, u16)) -> Option<usize> {
+        scrolled_content_row_at(
+            Some(pointer),
+            self.explorer.preview_area,
+            self.explorer.preview.document.len(),
+            self.explorer.preview_scroll,
+        )
+    }
+
+    fn click_file_preview(&mut self, pointer: (u16, u16)) {
+        if self.review.file.keyboard_selecting {
+            self.finish_visual_selection();
+            return;
+        }
+        if let Some(row) = self.file_preview_row_at(pointer)
+            && self
+                .surface_source(SelectionSurface::File, ReviewSide::After, row)
+                .is_some()
+        {
+            self.begin_visual_selection(ReviewSide::After, row, false);
+        }
+    }
+
+    fn begin_file_visual_selection(&mut self) {
+        let start =
+            (self.explorer.preview_scroll..self.explorer.preview.document.len()).find(|&row| {
+                self.surface_source(SelectionSurface::File, ReviewSide::After, row)
+                    .is_some()
+            });
+        match start {
+            Some(row) => self.begin_visual_selection(ReviewSide::After, row, true),
+            None => self.show_action_error("The preview has no source line to select."),
+        }
+    }
+
+    fn move_file_cursor(&mut self, delta: isize) {
+        let last = self.explorer.preview.document.len().saturating_sub(1);
+        let row = self
+            .review
+            .file_cursor
+            .saturating_add_signed(delta)
+            .min(last);
+        self.review.file_cursor = row;
+        let height = self.preview_page();
+        if row < self.explorer.preview_scroll {
+            self.explorer.preview_scroll = row;
+        } else if row >= self.explorer.preview_scroll + height {
+            self.explorer.preview_scroll = row + 1 - height;
+        }
+    }
+
     pub(super) fn handle_explorer_key(&mut self, key: KeyEvent) -> bool {
         match self.focus {
             PaneFocus::Explorer => match key.code {
@@ -370,7 +430,11 @@ impl App {
             PaneFocus::FilePreview => {
                 let page = isize::try_from(self.preview_page()).unwrap_or(isize::MAX);
                 let step = PREVIEW_HORIZONTAL_STEP as isize;
+                let selecting = self.review.file.keyboard_selecting;
                 match key.code {
+                    KeyCode::Char('v') if !selecting => self.begin_file_visual_selection(),
+                    KeyCode::Down | KeyCode::Char('j') if selecting => self.move_file_cursor(1),
+                    KeyCode::Up | KeyCode::Char('k') if selecting => self.move_file_cursor(-1),
                     KeyCode::Down | KeyCode::Char('j') => self.scroll_preview(1),
                     KeyCode::Up | KeyCode::Char('k') => self.scroll_preview(-1),
                     KeyCode::PageDown => self.scroll_preview(page),
@@ -421,7 +485,15 @@ impl App {
                 MouseEventKind::ScrollUp => self.scroll_preview(-wheel),
                 MouseEventKind::ScrollRight => self.scroll_preview_horizontal(step),
                 MouseEventKind::ScrollLeft => self.scroll_preview_horizontal(-step),
-                MouseEventKind::Down(MouseButton::Left) => self.focus = PaneFocus::FilePreview,
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.focus = PaneFocus::FilePreview;
+                    self.click_file_preview(pointer);
+                }
+                MouseEventKind::Drag(MouseButton::Left) if self.review.file.dragging_selection => {
+                    if let Some(row) = self.file_preview_row_at(pointer) {
+                        self.review.file_cursor = row;
+                    }
+                }
                 _ => return false,
             }
             return true;
@@ -522,59 +594,69 @@ impl App {
         let inner = Block::default().borders(Borders::ALL).inner(area);
         self.explorer.preview_area = inner;
         let selected = self.explorer.selected_file().map(str::to_owned);
-        let title = selected.clone().unwrap_or_else(|| "Preview".to_owned());
+        let title = self
+            .selection_title(SelectionSurface::File)
+            .unwrap_or_else(|| Line::raw(selected.clone().unwrap_or_else(|| "Preview".to_owned())));
         frame.render_widget(
             widgets::pane_block(title, self.focus == PaneFocus::FilePreview),
             area,
         );
-        let preview = self
-            .explorer
-            .preview
-            .as_ref()
-            .filter(|(path, _)| Some(path) == selected.as_ref())
-            .map(|(_, preview)| preview);
-        let lines = match preview {
-            Some(FilePreview::Text(lines)) => lines,
-            Some(FilePreview::Notice(notice)) => {
-                frame.render_widget(
-                    Paragraph::new(notice.clone())
-                        .style(theme::hint())
-                        .wrap(Wrap { trim: false }),
-                    inner,
-                );
-                return;
-            }
-            None => {
-                let text = if selected.is_some() {
-                    "Loading…"
-                } else {
-                    "Select a file to preview it"
-                };
-                frame.render_widget(Paragraph::new(text).style(theme::hint()), inner);
-                return;
-            }
-        };
+        if self.explorer.preview_path().is_none() {
+            let text = if selected.is_some() {
+                "Loading…"
+            } else {
+                "Select a file to preview it"
+            };
+            frame.render_widget(Paragraph::new(text).style(theme::hint()), inner);
+            return;
+        }
+        if let Some(notice) = &self.explorer.preview.notice {
+            frame.render_widget(
+                Paragraph::new(notice.clone())
+                    .style(theme::hint())
+                    .wrap(Wrap { trim: false }),
+                inner,
+            );
+            return;
+        }
         let height = usize::from(inner.height);
-        let max_scroll = lines.len().saturating_sub(height);
-        self.explorer.preview_scroll = self.explorer.preview_scroll.min(max_scroll);
-        let widest = lines.iter().map(Line::width).max().unwrap_or_default();
+        let width = usize::from(inner.width);
+        let document = &self.explorer.preview.document;
+        self.explorer.preview_scroll = self
+            .explorer
+            .preview_scroll
+            .min(document.len().saturating_sub(height));
         self.explorer.preview_horizontal_scroll = self
             .explorer
             .preview_horizontal_scroll
-            .min(widest.saturating_sub(usize::from(inner.width)));
-        let visible = lines
-            .iter()
-            .skip(self.explorer.preview_scroll)
-            .take(height)
-            .map(|line| {
-                horizontal_line_slice(
-                    line.clone(),
-                    self.explorer.preview_horizontal_scroll,
-                    usize::from(inner.width),
-                )
-            })
-            .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(visible), inner);
+            .min(document.after_max_width().saturating_sub(width));
+        let scroll = self.explorer.preview_scroll;
+        let horizontal = self.explorer.preview_horizontal_scroll;
+        let document = &self.explorer.preview.document;
+        let mut lines = padded_diff_lines(
+            (scroll..)
+                .map_while(|row| document.after_line(row))
+                .take(height),
+            width,
+            horizontal,
+        );
+        if let Some(selection) = self.effective_selection_on(SelectionSurface::File) {
+            for (offset, line) in lines.iter_mut().enumerate() {
+                if selection.contains(scroll + offset) {
+                    emphasize_diff_line(line, true, theme::selection_row(), width);
+                }
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(lines).scroll((0, u16::try_from(horizontal).unwrap_or(u16::MAX))),
+            inner,
+        );
+        self.draw_selection_decorations(
+            frame,
+            SelectionSurface::File,
+            [Rect::default(), inner],
+            scroll,
+        );
     }
 }
 
@@ -599,13 +681,15 @@ mod tests {
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-    use super::super::App;
     use super::super::effect::{ForegroundRequest, RepositoryFiles};
+    use super::super::overlay::Overlay;
     use super::super::path_tree::PathTree;
+    use super::super::review::SelectionSurface;
     use super::super::shell::{ActiveTab, PaneFocus};
     use super::super::test_support::{
         committed_change, find_text, intercept_foreground, press, render,
     };
+    use super::super::{App, PendingClipboard};
 
     fn wait_for_explorer(app: &mut App) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -673,6 +757,35 @@ mod tests {
         press(&mut app, KeyCode::Down);
         wait_for_explorer(&mut app);
         assert!(find_text(&render(&mut app, 100, 30), "Binary file").is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn visual_selection_in_the_preview_copies_lines_with_their_numbers() {
+        let (root, mut app) = committed_change("explorer-copy");
+        app.set_tab(ActiveTab::Files);
+        wait_for_explorer(&mut app);
+        press(&mut app, KeyCode::Down);
+        wait_for_explorer(&mut app);
+        assert_eq!(app.explorer.preview_path(), Some("tracked.txt"));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('j'));
+        let buffer = render(&mut app, 100, 30);
+        assert!(find_text(&buffer, "tracked.txt:1–2").is_some());
+        assert!(find_text(&buffer, "y Yank · Esc Cancel").is_some());
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.overlay, Overlay::CopySelection(_)));
+        press(&mut app, KeyCode::Enter);
+        let Some(PendingClipboard::Selection(text)) = &app.pending_clipboard else {
+            panic!("selection was not copied");
+        };
+        assert_eq!(text, "File: tracked.txt\nLines: 1–2\n\none\ntwo changed");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.effective_selection_on(SelectionSurface::File).is_none());
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, PaneFocus::Explorer);
         fs::remove_dir_all(root).unwrap();
     }
 

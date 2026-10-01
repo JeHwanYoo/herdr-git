@@ -8,8 +8,6 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Instant;
 
-use ratatui::text::Line;
-
 use crate::git::{
     BlameInfo, ChangeSection, Commit, CommitDetails, DiffSummary, DiffTarget, GIT_READ_CANCELLED,
     GitOperation, LineHistoryCommit, LocalIdentity, ReadError, Repository, RepositoryFingerprint,
@@ -269,10 +267,19 @@ pub(super) struct RepositoryFiles {
     pub(super) tree: PathTree,
 }
 
-#[derive(Debug)]
-pub(super) enum FilePreview {
-    Text(Vec<Line<'static>>),
-    Notice(String),
+#[derive(Debug, Default)]
+pub(super) struct FilePreview {
+    pub(super) document: DiffDocument,
+    pub(super) notice: Option<String>,
+}
+
+impl FilePreview {
+    pub(super) fn notice(text: impl Into<String>) -> Self {
+        Self {
+            document: DiffDocument::default(),
+            notice: Some(text.into()),
+        }
+    }
 }
 
 #[derive(Debug)]
