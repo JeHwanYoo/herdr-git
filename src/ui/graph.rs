@@ -1422,21 +1422,7 @@ fn commit_ref_badges(references: &[CommitRef], width: usize) -> Vec<Span<'static
 }
 
 fn commit_subject_spans(subject: &str, width: usize) -> Vec<Span<'static>> {
-    let visible = truncate_to_width(subject, width);
-    let Some(colon) = visible.find(':') else {
-        return commit_subject_prose_spans(&visible);
-    };
-    let kind = visible[..colon].split('(').next().unwrap_or_default();
-    let Some(color) = theme::commit_type_color(kind) else {
-        return commit_subject_prose_spans(&visible);
-    };
-    let split = colon + 1;
-    let mut spans = vec![Span::styled(
-        visible[..split].to_owned(),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    )];
-    spans.extend(commit_subject_prose_spans(&visible[split..]));
-    spans
+    commit_subject_prose_spans(&truncate_to_width(subject, width))
 }
 
 fn commit_subject_prose_spans(prose: &str) -> Vec<Span<'static>> {
@@ -1776,33 +1762,24 @@ mod tests {
     }
 
     #[test]
-    fn graph_summary_accents_only_convention_numeric_reference_and_sha() {
+    fn graph_summary_accents_only_numeric_reference_and_sha() {
         let subject = "feat(core): English 한국어 API 추가 (#4053)";
         let subject_spans = commit_subject_spans(subject, 80);
-        let convention = subject_spans
-            .iter()
-            .find(|span| span.content == "feat(core):")
-            .expect("conventional commit label");
-        assert_eq!(convention.style.fg, Some(theme::ACCENT));
-        assert!(convention.style.add_modifier.contains(Modifier::BOLD));
         let reference = subject_spans
             .iter()
             .find(|span| span.content == "#4053")
             .expect("numeric reference");
         assert_eq!(reference.style.fg, Some(theme::REFERENCE));
         assert!(reference.style.add_modifier.contains(Modifier::BOLD));
-        let fix = commit_subject_spans("fix: keep tokens", 80);
-        assert_eq!(fix[0].content, "fix:");
-        assert_eq!(fix[0].style.fg, Some(theme::ERROR));
-        let plain = commit_subject_spans("style: no token", 80);
-        assert!(plain.iter().all(|span| span.style.fg.is_none()));
-        for prose in subject_spans
-            .iter()
-            .filter(|span| span.content != "feat(core):" && span.content != "#4053")
-        {
+        for prose in subject_spans.iter().filter(|span| span.content != "#4053") {
             assert_eq!(prose.style.fg, None);
             assert!(!prose.style.add_modifier.contains(Modifier::BOLD));
         }
+        assert!(
+            commit_subject_spans("fix: keep tokens", 80)
+                .iter()
+                .all(|span| span.style.fg.is_none())
+        );
 
         let commit = Commit {
             sha: "f889396123456789".to_owned(),

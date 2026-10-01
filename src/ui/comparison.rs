@@ -11,13 +11,10 @@ use crate::git::{ChangesComparison, DiffTarget, ResetTarget};
 use super::commands::{ActionCell, draw_action_bar};
 use super::effect::{ForegroundRequest, RefreshScope, RequestId};
 use super::overlay::Overlay;
-use super::shell::ActiveTab;
-use super::widgets::{
-    self, ConfirmButton, ConfirmButtons, TextEdit, TextField, left_click, truncate_to_width,
-};
+use super::shell::{ActiveTab, horizontal_scroll_limit};
+use super::widgets::{self, ConfirmButton, ConfirmButtons, TextEdit, TextField, left_click};
 use super::{App, theme};
 
-const COMPARISON_TITLE_MAX_WIDTH: usize = 32;
 const COMPARISON_SHORTCUTS: [char; 2] = ['d', 'm'];
 
 pub(super) struct ComparisonState {
@@ -26,6 +23,8 @@ pub(super) struct ComparisonState {
     pub compare: String,
     pub areas: [Rect; 2],
     pub commit_titles: Vec<(String, String)>,
+    pub info_area: Rect,
+    pub info_scroll: u16,
 }
 impl Default for ComparisonState {
     fn default() -> Self {
@@ -35,6 +34,8 @@ impl Default for ComparisonState {
             compare: String::new(),
             areas: [Rect::default(); 2],
             commit_titles: Vec::new(),
+            info_area: Rect::default(),
+            info_scroll: 0,
         }
     }
 }
@@ -157,7 +158,7 @@ impl App {
             false
         }
     }
-    pub(super) fn comparison_info(&self, width: u16) -> Line<'static> {
+    pub(super) fn comparison_info(&self) -> Line<'static> {
         if matches!(self.diff.diff_target, DiffTarget::WorkingTreeAgainstIndex)
             && !self.ops.command_context.has_changes
         {
@@ -181,7 +182,7 @@ impl App {
                 .map(endpoint)
                 .unwrap_or_else(|| ("Empty".into(), ""))
         };
-        let ((before, _), (mut after, after_title)) = match &self.diff.diff_target {
+        let ((before, _), (after, after_title)) = match &self.diff.diff_target {
             DiffTarget::CommitAgainstParent { commit, parent } => (
                 parent
                     .as_deref()
@@ -211,18 +212,40 @@ impl App {
             }
             DiffTarget::CommitAgainstParent { .. } => "",
         };
-        let available = usize::from(width)
-            .saturating_sub(Line::from(format!("{before} → {after}{suffix}")).width());
-        let title_width = available.saturating_sub(1).min(COMPARISON_TITLE_MAX_WIDTH);
-        if !after_title.is_empty() && title_width > 0 {
-            after.push(' ');
-            after.push_str(&truncate_to_width(after_title, title_width));
+        let mut spans = vec![
+            Span::styled(format!("{before} → "), theme::secondary()),
+            Span::styled(after, theme::secondary()),
+        ];
+        if !after_title.is_empty() {
+            spans.push(Span::styled(format!(" {after_title}"), theme::text()));
         }
-        Line::from(vec![
-            Span::styled(format!("{before} → "), theme::hint()),
-            Span::styled(after, theme::hint()),
-            Span::styled(suffix, theme::warning_text()),
-        ])
+        spans.push(Span::styled(suffix, theme::warning_text()));
+        Line::from(spans)
+    }
+
+    pub(super) fn draw_comparison_info(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let info = self.comparison_info();
+        self.comparison.info_area = area;
+        self.comparison.info_scroll = self
+            .comparison
+            .info_scroll
+            .min(horizontal_scroll_limit(info.width(), area.width));
+        frame.render_widget(
+            Paragraph::new(info).scroll((0, self.comparison.info_scroll)),
+            area,
+        );
+    }
+
+    pub(super) fn scroll_comparison_info(&mut self, delta: i16) {
+        let limit = horizontal_scroll_limit(
+            self.comparison_info().width(),
+            self.comparison.info_area.width,
+        );
+        self.comparison.info_scroll = self
+            .comparison
+            .info_scroll
+            .saturating_add_signed(delta)
+            .min(limit);
     }
 
     pub(super) fn draw_comparison_controls(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -560,7 +583,7 @@ mod tests {
         let mut app = App::load(Repository::discover(&root).unwrap()).unwrap();
         assert_eq!(app.files.changes.len(), 1);
         assert_eq!(app.files.changes[0].path, "two.txt");
-        let info = app.comparison_info(120).to_string();
+        let info = app.comparison_info().to_string();
         assert!(!info.contains("One") && info.ends_with("Two"), "{info}");
         let screen = buffer_text(&render(&mut app, 120, 30));
         assert!(
@@ -646,39 +669,53 @@ mod tests {
         assert!(matches!(app.overlay, Overlay::None));
     }
     #[test]
-    fn comparison_info_hides_previous_title_and_truncates_current_title() {
+    fn comparison_info_shows_the_full_title_and_scrolls_when_it_does_not_fit() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+
         let mut app = offline_app();
         app.diff.diff_target = DiffTarget::CommitAgainstParent {
             commit: "abcdef123456".into(),
             parent: Some("123456789abc".into()),
         };
+        let title = "이 커밋 메시지는 헤더에 모두 표시하기에 너무 길다";
         app.comparison.commit_titles = vec![
             ("123456789abc".into(), "첫 커밋".into()),
-            (
-                "abcdef123456".into(),
-                "이 커밋 메시지는 헤더에 모두 표시하기에 너무 길다".into(),
-            ),
+            ("abcdef123456".into(), title.into()),
         ];
-        assert_eq!(
-            app.comparison_info(120).to_string(),
-            "1234567 → abcdef1 이 커밋 메시지는 헤더에 모두 표…"
-        );
         app.ops.command_context.has_changes = true;
-        let line = app.comparison_info(40);
-        assert!(line.width() <= 40);
-        let text = line.to_string();
-        for part in ["1234567", "→", "abcdef1", "Uncommitted"] {
-            assert!(text.contains(part), "{text}");
-        }
-        assert!(!text.contains("첫 커밋"), "{text}");
-        app.ops.command_context.head_commit = Some("abcdef123456".into());
-        app.diff.diff_target = DiffTarget::WorkingTreeAgainstRevision {
-            base: "abcdef123456".into(),
-        };
+        let info = app.comparison_info();
         assert_eq!(
-            app.comparison_info(80).to_string(),
-            "abcdef1 → Working Tree (Uncommitted)"
+            info.to_string(),
+            format!("1234567 → abcdef1 {title} · Uncommitted")
         );
+        let title_span = info
+            .spans
+            .iter()
+            .find(|span| span.content.contains(title))
+            .expect("title span");
+        assert_eq!(title_span.style.fg, Some(theme::TEXT));
+        assert_eq!(info.spans[1].style.fg, Some(theme::SECONDARY));
+
+        let buffer = render(&mut app, 40, 12);
+        let area = app.comparison.info_area;
+        let row = |buffer: &ratatui::buffer::Buffer| {
+            (area.x..area.right())
+                .map(|x| buffer[(x, area.y)].symbol())
+                .collect::<String>()
+        };
+        assert!(row(&buffer).starts_with("1234567 → abcdef1 이"));
+        assert!(!row(&buffer).contains('…'));
+        for _ in 0..1_000 {
+            app.handle(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollRight,
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }))
+            .unwrap();
+        }
+        let buffer = render(&mut app, 40, 12);
+        assert!(row(&buffer).trim_end().ends_with("· Uncommitted"));
     }
 
     #[test]
@@ -689,22 +726,22 @@ mod tests {
             commit: "abcdef123456".into(),
             parent: Some("123456789abc".into()),
         };
-        assert_eq!(app.comparison_info(120).to_string(), "1234567 → abcdef1");
+        assert_eq!(app.comparison_info().to_string(), "1234567 → abcdef1");
         app.ops.command_context.has_changes = true;
         assert_eq!(
-            app.comparison_info(120).to_string(),
+            app.comparison_info().to_string(),
             "1234567 → abcdef1 · Uncommitted"
         );
         app.diff.diff_target = DiffTarget::WorkingTreeAgainstRevision {
             base: "4b825dc642cb6eb9a060e54bf8d69288fbee4904".into(),
         };
         assert_eq!(
-            app.comparison_info(120).to_string(),
+            app.comparison_info().to_string(),
             "Empty → Working Tree (Uncommitted)"
         );
         app.diff.diff_target = DiffTarget::IndexAgainstHead;
         assert_eq!(
-            app.comparison_info(120).to_string(),
+            app.comparison_info().to_string(),
             "Empty → Index (Uncommitted)"
         );
         app.ops.command_context.head_commit = Some("abcdef123456".into());
@@ -712,7 +749,7 @@ mod tests {
             base: "abcdef123456".into(),
         };
         assert_eq!(
-            app.comparison_info(120).to_string(),
+            app.comparison_info().to_string(),
             "abcdef1 → Working Tree (Uncommitted)"
         );
         app.diff.diff_target = DiffTarget::CommitAgainstParent {
@@ -720,17 +757,17 @@ mod tests {
             parent: None,
         };
         assert_eq!(
-            app.comparison_info(120).to_string(),
+            app.comparison_info().to_string(),
             "Empty → abcdef1 · Uncommitted"
         );
         app.diff.diff_target = DiffTarget::WorkingTreeAgainstIndex;
         assert_eq!(
-            app.comparison_info(120).to_string(),
+            app.comparison_info().to_string(),
             "Index → Working Tree (Uncommitted)"
         );
         app.diff.diff_target = DiffTarget::IndexAgainstHead;
         assert_eq!(
-            app.comparison_info(120).to_string(),
+            app.comparison_info().to_string(),
             "abcdef1 → Index (Uncommitted)"
         );
     }

@@ -15,15 +15,6 @@ pub(super) const TEXT_INVERSE: Color = Color::Black;
 pub(super) const REFERENCE: Color = Color::LightYellow;
 pub(super) const STATUS_TYPE_CHANGE: Color = Color::Blue;
 pub(super) const STATUS_UNMERGED: Color = Color::Magenta;
-pub(super) const COMMIT_TYPE_COLORS: [(&str, Color); 7] = [
-    ("feat", ACCENT),
-    ("fix", ERROR),
-    ("refactor", Color::Magenta),
-    ("docs", Color::LightBlue),
-    ("test", WARNING),
-    ("perf", SUCCESS),
-    ("chore", Color::Gray),
-];
 pub(super) const SURFACE_FOCUS: Color = Color::Rgb(48, 53, 61);
 pub(super) const SURFACE_HOVER: Color = Color::Rgb(38, 58, 82);
 pub(super) const SURFACE_SELECTION: Color = Color::Rgb(52, 74, 110);
@@ -60,13 +51,6 @@ pub(super) const LIST_MARKER: &str = "▶ ";
 pub(super) const BRANCH_GLYPH: &str = "\u{f418}";
 pub(super) const REMOTE_GLYPH: &str = "\u{f0ac}";
 pub(super) const TAG_GLYPH: &str = "\u{f02b}";
-
-pub(super) fn commit_type_color(kind: &str) -> Option<Color> {
-    COMMIT_TYPE_COLORS
-        .iter()
-        .find(|(candidate, _)| *candidate == kind)
-        .map(|(_, color)| *color)
-}
 
 pub(super) const DIALOG_NARROW: u16 = 56;
 pub(super) const DIALOG_MEDIUM: u16 = 68;
@@ -115,6 +99,10 @@ pub(super) fn error_title() -> Style {
 
 pub(super) fn success_title() -> Style {
     Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD)
+}
+
+pub(super) fn text() -> Style {
+    Style::default().fg(TEXT)
 }
 
 pub(super) fn warning_text() -> Style {
@@ -166,23 +154,10 @@ mod tests {
     use ratatui::style::{Color, Modifier, Style};
 
     use super::{
-        ACCENT, COMMIT_TYPE_COLORS, CURSOR_GLYPH, ERROR, HINT, SPINNER_FRAMES, SURFACE_FOCUS,
-        SURFACE_HOVER, SURFACE_SELECTION, commit_type_color, cursor_span, error_title, focus_row,
-        hint, hover, selection_row, spinner_frame, spinner_span,
+        ACCENT, CURSOR_GLYPH, ERROR, HINT, SPINNER_FRAMES, SURFACE_FOCUS, SURFACE_HOVER,
+        SURFACE_SELECTION, cursor_span, error_title, focus_row, hint, hover, selection_row,
+        spinner_frame, spinner_span,
     };
-
-    #[test]
-    fn commit_type_colors_are_distinct_tokens_and_fix_uses_the_error_color() {
-        assert_eq!(commit_type_color("feat"), Some(ACCENT));
-        assert_eq!(commit_type_color("fix"), Some(ERROR));
-        assert_eq!(commit_type_color("style"), None);
-        let colors = COMMIT_TYPE_COLORS
-            .iter()
-            .map(|(_, color)| *color)
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(colors.len(), COMMIT_TYPE_COLORS.len());
-        assert!(!colors.contains(&Color::LightRed));
-    }
 
     #[test]
     fn focus_and_selection_rows_are_bold_on_distinct_surfaces() {

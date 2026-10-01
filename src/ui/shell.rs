@@ -276,8 +276,14 @@ impl App {
     pub(super) fn handle_shell_mouse(&mut self, mouse: MouseEvent) -> bool {
         let position = (mouse.column, mouse.row).into();
         let over_status = self.shell.status_bar_area.contains(position);
+        let over_info = self.shell.active_tab == ActiveTab::Changes
+            && self.comparison.info_area.contains(position);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
+            MouseEventKind::ScrollRight if over_info => self.scroll_comparison_info(1),
+            MouseEventKind::ScrollLeft if over_info => self.scroll_comparison_info(-1),
+            MouseEventKind::ScrollDown if shift && over_info => self.scroll_comparison_info(1),
+            MouseEventKind::ScrollUp if shift && over_info => self.scroll_comparison_info(-1),
             MouseEventKind::ScrollRight if over_status => self.scroll_status_horizontal(1),
             MouseEventKind::ScrollLeft if over_status => self.scroll_status_horizontal(-1),
             MouseEventKind::ScrollDown if shift && over_status => self.scroll_status_horizontal(1),
@@ -509,7 +515,7 @@ impl App {
     }
 
     pub(super) fn scroll_status_horizontal(&mut self, delta: i16) {
-        let limit = status_horizontal_scroll_limit(
+        let limit = horizontal_scroll_limit(
             self.status_bar_line().width(),
             self.shell.status_bar_area.width,
         );
@@ -601,10 +607,7 @@ impl App {
             self.graph.action_areas.clear();
             self.draw_comparison_controls(frame, tab_action_area);
             let info_area = Rect::new(area.x, tab_action_area.bottom() + action_gap, area.width, 1);
-            frame.render_widget(
-                Paragraph::new(self.comparison_info(info_area.width)),
-                info_area,
-            );
+            self.draw_comparison_info(frame, info_area);
         }
     }
 
@@ -614,7 +617,7 @@ impl App {
         self.shell.status_horizontal_scroll = self
             .shell
             .status_horizontal_scroll
-            .min(status_horizontal_scroll_limit(status.width(), area.width));
+            .min(horizontal_scroll_limit(status.width(), area.width));
         let scroll = usize::from(self.shell.status_horizontal_scroll);
         self.shell.status_blame_area = blame_columns
             .map(|(start, end)| {
@@ -644,7 +647,7 @@ pub(super) fn draw_loading(frame: &mut Frame<'_>, elapsed: Duration) {
     );
 }
 
-pub(super) fn status_horizontal_scroll_limit(content_width: usize, viewport_width: u16) -> u16 {
+pub(super) fn horizontal_scroll_limit(content_width: usize, viewport_width: u16) -> u16 {
     content_width
         .saturating_sub(viewport_width as usize)
         .min(u16::MAX as usize) as u16
@@ -834,8 +837,8 @@ mod tests {
 
     use super::{
         ActiveTab, AppShortcut, DEFAULT_ACTIVE_TAB, HeaderAction, PaneFocus, alt_modifier_hint,
-        app_shortcut, app_shortcut_code, draw_loading, header_action_at, next_tab, osc52_sequence,
-        shortcut_hints_visible, status_horizontal_scroll_limit, tab_style, write_osc52,
+        app_shortcut, app_shortcut_code, draw_loading, header_action_at, horizontal_scroll_limit,
+        next_tab, osc52_sequence, shortcut_hints_visible, tab_style, write_osc52,
     };
 
     fn diff_result(
@@ -1493,7 +1496,7 @@ mod tests {
         .unwrap();
         render(&mut app, 40, 12);
         let area = app.shell.status_bar_area;
-        let limit = status_horizontal_scroll_limit(app.status_bar_line().width(), area.width);
+        let limit = horizontal_scroll_limit(app.status_bar_line().width(), area.width);
         assert!(limit > 0);
         let wheel = |kind, modifiers| {
             Event::Mouse(MouseEvent {
