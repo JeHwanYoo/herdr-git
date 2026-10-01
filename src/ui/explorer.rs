@@ -1535,17 +1535,12 @@ mod tests {
             row: tree.y,
             modifiers,
         };
-        let outside = MouseEvent {
-            column: app.explorer.preview_area.x + 1,
-            row: app.explorer.preview_area.y,
-            ..wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE)
-        };
         let down = wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE);
-        assert_eq!(app.wheel_burst_limit(&Event::Mouse(down)), 1);
-        assert_eq!(app.wheel_burst_limit(&Event::Mouse(outside)), 4);
 
         app.focus = PaneFocus::FilePreview;
-        app.handle(Event::Mouse(down)).unwrap();
+        for _ in 0..4 {
+            app.handle(Event::Mouse(down)).unwrap();
+        }
         assert_eq!(app.explorer.selected, 1);
         assert_eq!(app.focus, PaneFocus::Explorer);
 

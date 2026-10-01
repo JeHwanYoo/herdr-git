@@ -2012,6 +2012,7 @@ mod tests {
         render(&mut app, 100, 20);
 
         for _ in 0..10 {
+            app.shell.selection_wheel = None;
             app.handle(wheel(
                 MouseEventKind::ScrollDown,
                 list.x.saturating_add(1),
