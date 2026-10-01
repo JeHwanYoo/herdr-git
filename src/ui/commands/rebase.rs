@@ -416,8 +416,8 @@ impl App {
             _ => {
                 if let Event::Mouse(mouse) = input {
                     match mouse.kind {
-                        MouseEventKind::ScrollUp => editor.cursor.move_by(-3, plan.entries.len()),
-                        MouseEventKind::ScrollDown => editor.cursor.move_by(3, plan.entries.len()),
+                        MouseEventKind::ScrollUp => editor.cursor.move_by(-1, plan.entries.len()),
+                        MouseEventKind::ScrollDown => editor.cursor.move_by(1, plan.entries.len()),
                         _ => {}
                     }
                 }

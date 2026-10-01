@@ -2,7 +2,7 @@ use std::time::{Instant, SystemTime};
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -32,6 +32,10 @@ pub(super) struct LineHistoryDialog {
 }
 
 impl LineHistoryDialog {
+    pub(super) fn diff_contains(&self, position: Position) -> bool {
+        self.diff_area.contains(position)
+    }
+
     fn select(&mut self, index: usize) {
         let index = index.min(self.entries.len().saturating_sub(1));
         if index != self.selected {

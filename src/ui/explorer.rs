@@ -7,7 +7,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
@@ -21,7 +21,7 @@ use super::files::{status_label, status_style};
 use super::overlay::Overlay;
 use super::path_tree::{PathRow, PathRowKind};
 use super::review::{ReviewSide, SelectionSurface};
-use super::shell::{ActiveTab, PaneFocus};
+use super::shell::PaneFocus;
 use super::syntax::DiffDocument;
 use super::widgets::{
     self, ListCursor, TextEdit, TextField, chord, counted_title, scrolled_content_row_at,
@@ -585,17 +585,8 @@ impl App {
         }
     }
 
-    pub(super) fn explorer_wheel_moves_selection(&self, mouse: &MouseEvent) -> bool {
-        self.shell.active_tab == ActiveTab::Files
-            && matches!(
-                mouse.kind,
-                MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-            )
-            && !mouse.modifiers.contains(KeyModifiers::SHIFT)
-            && self
-                .explorer
-                .tree_area
-                .contains((mouse.column, mouse.row).into())
+    pub(super) fn explorer_list_contains(&self, position: Position) -> bool {
+        self.explorer.tree_area.contains(position)
     }
 
     fn explorer_list_width(&self) -> usize {

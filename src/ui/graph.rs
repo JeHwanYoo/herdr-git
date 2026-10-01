@@ -375,7 +375,7 @@ impl App {
             .filter(|area| area.contains((column, row).into()))
     }
 
-    fn history_scroll_region_contains(&self, column: u16, row: u16) -> bool {
+    pub(super) fn history_scroll_region_contains(&self, column: u16, row: u16) -> bool {
         let position = (column, row).into();
         self.graph.history_content_area.contains(position)
             || self

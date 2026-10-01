@@ -669,9 +669,31 @@ const WHEEL_BURST_LIMIT: usize = 4;
 impl App {
     pub(super) fn wheel_burst_limit(&self, event: &Event) -> usize {
         match event {
-            Event::Mouse(mouse) if self.explorer_wheel_moves_selection(mouse) => 1,
+            Event::Mouse(mouse) if self.wheel_moves_selection(mouse) => 1,
             _ => WHEEL_BURST_LIMIT,
         }
+    }
+
+    fn wheel_moves_selection(&self, mouse: &MouseEvent) -> bool {
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+        ) || mouse.modifiers.contains(KeyModifiers::SHIFT)
+        {
+            return false;
+        }
+        let position = (mouse.column, mouse.row).into();
+        match &self.overlay {
+            Overlay::None | Overlay::GraphFilter | Overlay::FileFilter => {}
+            Overlay::LineHistory(dialog) => return !dialog.diff_contains(position),
+            _ => return true,
+        }
+        self.workspaces.repository_list_area.contains(position)
+            || match self.shell.active_tab {
+                ActiveTab::Changes => self.files.list_area.contains(position),
+                ActiveTab::History => self.history_scroll_region_contains(mouse.column, mouse.row),
+                ActiveTab::Files => self.explorer_list_contains(position),
+            }
     }
 }
 
@@ -828,6 +850,7 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier};
 
+    use super::WHEEL_BURST_LIMIT;
     use crate::git::{ReadError, Repository, RepositoryFingerprint};
     use crate::project::ProjectRegistry;
     use crate::ui::commands::CommandId;
@@ -1496,6 +1519,47 @@ mod tests {
         assert!(find_text_in_row(buffer, y - 1, "Git").is_some());
         assert_eq!(buffer[(12, y)].symbol(), "│");
         assert_eq!(buffer[(47, y)].symbol(), "│");
+    }
+
+    #[test]
+    fn wheel_bursts_move_selection_lists_one_row_and_scroll_content_freely() {
+        let (root, mut app) = committed_change("wheel-burst-limit");
+        let wheel = |area: Rect, modifiers| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: area.x + 1,
+                row: area.y,
+                modifiers,
+            })
+        };
+        render(&mut app, 120, 40);
+        assert_eq!(
+            app.wheel_burst_limit(&wheel(app.files.list_area, KeyModifiers::NONE)),
+            1
+        );
+        assert_eq!(
+            app.wheel_burst_limit(&wheel(app.files.list_area, KeyModifiers::SHIFT)),
+            WHEEL_BURST_LIMIT
+        );
+        assert_eq!(
+            app.wheel_burst_limit(&wheel(app.diff.diff_area, KeyModifiers::NONE)),
+            WHEEL_BURST_LIMIT
+        );
+        assert_eq!(
+            app.wheel_burst_limit(&wheel(
+                app.workspaces.repository_list_area,
+                KeyModifiers::NONE
+            )),
+            1
+        );
+
+        app.set_tab(ActiveTab::History);
+        render(&mut app, 120, 40);
+        assert_eq!(
+            app.wheel_burst_limit(&wheel(app.graph.history_content_area, KeyModifiers::NONE)),
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
