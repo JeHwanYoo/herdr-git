@@ -1,3 +1,8 @@
+use std::fs;
+use std::io::{self, Read};
+
+use crate::git::LineChange;
+
 use super::refresh::{highlight_diff, refresh_changes};
 use super::*;
 
@@ -352,6 +357,57 @@ pub(in crate::ui) fn run_foreground_job(
                 result,
             }
         }
+        ForegroundRequest::RepositoryFiles {
+            id,
+            generation,
+            root,
+        } => {
+            let result = with_read_cancellation_result(
+                Arc::clone(&cancellations.repository_files),
+                generation.get(),
+                || {
+                    let paths = Repository::at_root(root.clone()).files()?;
+                    let tree = PathTree::from_paths(paths.iter().map(String::as_str).enumerate());
+                    Ok(RepositoryFiles { paths, tree })
+                },
+            );
+            ForegroundResult::RepositoryFiles {
+                id,
+                generation,
+                root,
+                result,
+            }
+        }
+        ForegroundRequest::FilePreview {
+            id,
+            generation,
+            root,
+            file,
+            new_file,
+        } => {
+            let cancelled =
+                || cancellations.file_preview.load(Ordering::Acquire) != generation.get();
+            let result = with_read_cancellation_result(
+                Arc::clone(&cancellations.file_preview),
+                generation.get(),
+                || {
+                    read_file_preview(
+                        &root,
+                        &file,
+                        new_file,
+                        syntax.get_or_init(SyntaxHighlighter::new),
+                        &cancelled,
+                    )
+                },
+            );
+            ForegroundResult::FilePreview {
+                id,
+                generation,
+                root,
+                file,
+                result,
+            }
+        }
         ForegroundRequest::AddProject { id, mut registry } => {
             let result = match pick_project_directory() {
                 Ok(Some(path)) => match registry.add(&path) {
@@ -493,4 +549,69 @@ pub(in crate::ui) fn load_repository_snapshot(
         changes,
         command_context,
     })
+}
+
+const FILE_PREVIEW_BYTE_LIMIT: u64 = 1024 * 1024;
+
+fn read_file_preview(
+    root: &Path,
+    file: &str,
+    new_file: bool,
+    highlighter: &SyntaxHighlighter,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<FilePreview, String> {
+    let path = root.join(file);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(FilePreview::notice("Deleted in the working tree"));
+        }
+        Err(error) => return Err(format!("{file}: {error}")),
+    };
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(&path).map_err(|error| format!("{file}: {error}"))?;
+        return Ok(FilePreview::notice(format!(
+            "Symbolic link to {}",
+            target.display()
+        )));
+    }
+    if !metadata.is_file() {
+        return Ok(FilePreview::notice("Not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|handle| {
+            handle
+                .take(FILE_PREVIEW_BYTE_LIMIT + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| format!("{file}: {error}"))?;
+    if bytes.len() as u64 > FILE_PREVIEW_BYTE_LIMIT {
+        return Ok(FilePreview::notice(
+            "File is larger than 1 MiB and is not previewed",
+        ));
+    }
+    if bytes.contains(&0) {
+        return Ok(FilePreview::notice("Binary file"));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let changes = if new_file {
+        vec![LineChange {
+            old_start: 1,
+            removed: Vec::new(),
+            new_start: 1,
+            added: text.lines().count(),
+        }]
+    } else {
+        Repository::at_root(root.to_owned())
+            .line_changes(file)
+            .unwrap_or_default()
+    };
+    highlighter
+        .highlight_file_cancellable(&text, file, &changes, cancelled)
+        .map(|document| FilePreview {
+            document,
+            notice: None,
+        })
+        .ok_or_else(|| GIT_READ_CANCELLED.to_owned())
 }

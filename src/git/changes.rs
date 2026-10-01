@@ -265,6 +265,46 @@ impl Repository {
         .map(|output| output.split('\0').any(|candidate| candidate == path))
     }
 
+    pub fn files(&self) -> Result<Vec<String>, String> {
+        git(
+            &self.root,
+            &[
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+        )
+        .map(|output| {
+            let mut paths = output
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            paths.sort();
+            paths.dedup();
+            paths
+        })
+    }
+
+    pub fn line_changes(&self, path: &str) -> Result<Vec<LineChange>, String> {
+        git(
+            &self.root,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--no-renames",
+                "--unified=0",
+                "HEAD",
+                "--",
+                path,
+            ],
+        )
+        .map(|output| parse_line_changes(&output))
+    }
+
     fn untracked_paths(&self) -> Result<Vec<String>, String> {
         git(
             &self.root,

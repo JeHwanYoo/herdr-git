@@ -2058,7 +2058,7 @@ mod tests {
         };
         let buffer = render(&mut app, 80, 16);
         assert!(row_text(&buffer, 0, 80).trim().is_empty());
-        assert!(row_text(&buffer, 1, 80).starts_with(" Changes    Graph    Commands "));
+        assert!(row_text(&buffer, 1, 80).starts_with(" Changes    Graph    Files    Commands "));
         assert!(row_text(&buffer, 2, 80).trim().is_empty());
         let normal = row_text(&buffer, 3, 80);
         assert!(row_text(&buffer, 4, 80).trim().is_empty());

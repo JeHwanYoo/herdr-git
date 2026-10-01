@@ -48,13 +48,14 @@ Module names below refer to children of `ui`; App is defined in `ui.rs`.
 | `effect.rs` | Requests, results, and workers for foreground jobs and repository refreshes |
 | `lanes.rs` | Job scheduling, read cancellation, and refresh result application to App |
 | `history.rs` | History paging and maintenance workers, including scheduling and shutdown |
+| `explorer.rs` | Files tab tree, file preview, and the file search worker |
 | `update.rs` | Plugin update state, background checks and installation, and version button |
 | `widgets.rs` | Reusable UI controls and geometry |
 | `theme.rs` | Visual styles |
 
 - Keep feature-specific state, input handling, rendering, and dialog behavior together, as in `files` and `workspaces`.
 - Feature modules may implement App methods; App coordinates their work.
-- Run foreground read jobs and mutation jobs on separate workers. Workers in `effect` and `history` exchange requests and results with the UI thread and must not access App.
+- Run foreground read jobs and mutation jobs on separate workers. Workers in `effect`, `history`, and `explorer` exchange requests and results with the UI thread and must not access App.
 - Dispatch repository reads, Git commands, and project persistence to background workers from UI handlers; render from in-memory state. Terminal input and drawing stay on the UI thread.
 - Before applying an asynchronous result, verify that it belongs to the current request and repository. Discard superseded results.
 - `widgets` may depend on `theme`. `theme` must not depend on features or widgets.

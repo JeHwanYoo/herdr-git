@@ -103,14 +103,16 @@ pub(in crate::ui) fn copy_selection_text(
     include_code: bool,
     include_line: bool,
     path: &str,
-    side: ReviewSide,
+    side: Option<ReviewSide>,
     line_numbers: &[usize],
     code: &[String],
 ) -> String {
     debug_assert!(include_code || include_line);
+    let side = side
+        .map(|side| format!("\nSide: {}", side.label()))
+        .unwrap_or_default();
     let context = format!(
-        "File: {path}\nSide: {}\nLines: {}",
-        side.label(),
+        "File: {path}{side}\nLines: {}",
         line_numbers_text(line_numbers)
     );
     match (include_code, include_line) {
@@ -135,15 +137,36 @@ mod tests {
         .unwrap();
         assert_eq!(lines, [10, 12]);
         assert_eq!(
-            copy_selection_text(true, false, "src/a.rs", ReviewSide::After, &lines, &code),
+            copy_selection_text(
+                true,
+                false,
+                "src/a.rs",
+                Some(ReviewSide::After),
+                &lines,
+                &code
+            ),
             "first\nthird"
         );
         assert_eq!(
-            copy_selection_text(false, true, "src/a.rs", ReviewSide::After, &lines, &code),
+            copy_selection_text(
+                false,
+                true,
+                "src/a.rs",
+                Some(ReviewSide::After),
+                &lines,
+                &code
+            ),
             "File: src/a.rs\nSide: After\nLines: 10, 12"
         );
         assert_eq!(
-            copy_selection_text(true, true, "src/a.rs", ReviewSide::After, &lines, &code),
+            copy_selection_text(
+                true,
+                true,
+                "src/a.rs",
+                Some(ReviewSide::After),
+                &lines,
+                &code
+            ),
             "File: src/a.rs\nSide: After\nLines: 10, 12\n\nfirst\nthird"
         );
     }

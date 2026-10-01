@@ -42,6 +42,7 @@ mod commands;
 mod comparison;
 mod diff;
 mod effect;
+mod explorer;
 mod files;
 mod graph;
 mod history;
@@ -49,6 +50,7 @@ mod inspect;
 mod lanes;
 mod line_history;
 mod overlay;
+mod path_tree;
 mod review;
 mod session;
 mod shell;
@@ -238,6 +240,7 @@ struct App {
     maintenance: history::MaintenanceLane,
     inspect: InspectState,
     files: FilesState,
+    explorer: explorer::ExplorerState,
     comparison: comparison::ComparisonState,
     diff: DiffState,
     review: ReviewState,
@@ -316,6 +319,7 @@ impl App {
             maintenance: history::MaintenanceLane::start()?,
             inspect: InspectState::default(),
             files: FilesState::new(changes),
+            explorer: explorer::ExplorerState::default(),
             comparison: comparison::ComparisonState::default(),
             diff: DiffState::default(),
             review: ReviewState::default(),
@@ -353,6 +357,9 @@ impl App {
             return Ok(false);
         }
         self.track_pointer(&input);
+        if self.skip_repeated_selection_wheel(&input) {
+            return Ok(false);
+        }
         if self.handle_overlay(&input)? {
             return Ok(false);
         }
@@ -370,6 +377,9 @@ impl App {
                 if self.shell.active_tab == ActiveTab::Changes && self.handle_diff_key(key)? {
                     return Ok(false);
                 }
+                if self.shell.active_tab == ActiveTab::Files && self.handle_explorer_key(key) {
+                    return Ok(false);
+                }
                 if self.handle_review_key(key) {
                     return Ok(false);
                 }
@@ -381,6 +391,9 @@ impl App {
                 Ok(self.handle_shell_key(key))
             }
             Event::Mouse(mouse) => {
+                if self.shell.active_tab == ActiveTab::Files && self.handle_explorer_mouse(mouse) {
+                    return Ok(false);
+                }
                 if self.shell.active_tab == ActiveTab::Changes
                     && (self.handle_files_mouse(mouse)? || self.handle_diff_mouse(mouse)?)
                 {
@@ -538,6 +551,19 @@ impl App {
                     generation,
                     result,
                 } => self.apply_line_history(id, generation, result),
+                ForegroundResult::RepositoryFiles {
+                    id,
+                    generation,
+                    root,
+                    result,
+                } => self.apply_repository_files(id, generation, root, result),
+                ForegroundResult::FilePreview {
+                    id,
+                    generation,
+                    root,
+                    file,
+                    result,
+                } => self.apply_file_preview(id, generation, root, file, result),
                 ForegroundResult::ProjectMutation { id, result } => {
                     self.apply_project_mutation(id, result)
                 }
@@ -561,7 +587,8 @@ impl App {
                 action.kind,
                 crate::ui::lanes::ForegroundKind::BranchTargets { .. }
             )
-        }) {
+        }) || self.explorer.search_pending()
+        {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
@@ -572,6 +599,7 @@ impl App {
         let mut changed = self.receive_foreground_results();
         changed |= self.poll_update();
         changed |= self.receive_history();
+        changed |= self.tick_explorer_search();
         changed |= self.reveal_pending_commit();
         changed |= self.maintenance.tick(
             self.repository.as_ref().map(|repo| repo.root().to_owned()),

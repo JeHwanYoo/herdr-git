@@ -54,6 +54,7 @@ pub(super) enum Overlay {
     ContextMenu(ContextMenu),
     Commands(CommandPalette),
     GraphFilter,
+    FileFilter,
     Result(OperationResultView, Option<Box<Overlay>>),
 }
 
@@ -93,6 +94,7 @@ impl Overlay {
             | Self::AddRemote(_)
             | Self::Commands(_)
             | Self::GraphFilter
+            | Self::FileFilter
             | Self::LineHistory(_)
             | Self::Result(_, _) => true,
         }
@@ -184,6 +186,7 @@ impl App {
         match &self.overlay {
             Overlay::None => return Ok(false),
             Overlay::GraphFilter => return Ok(self.handle_graph_filter(input)),
+            Overlay::FileFilter => return Ok(self.handle_file_filter(input)),
             Overlay::Result(_, _) => self.handle_result(input),
             Overlay::Workspace(_) => self.handle_workspace_picker(input),
             Overlay::Commit(dialog) if dialog.agent_picker.is_some() => {
@@ -221,6 +224,7 @@ impl App {
                 Overlay::Update { tag, buttons }
             }
             Overlay::GraphFilter => Overlay::GraphFilter,
+            Overlay::FileFilter => Overlay::FileFilter,
             Overlay::Result(view, previous) => {
                 self.draw_result(frame, &view);
                 Overlay::Result(view, previous)

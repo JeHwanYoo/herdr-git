@@ -14,7 +14,8 @@ impl App {
             0
         };
         let header_height = 4 + action_gap + outer_header_margin * 2 + comparison_info_height;
-        let constraints = if self.shell.active_tab == ActiveTab::History {
+        let constraints = if matches!(self.shell.active_tab, ActiveTab::History | ActiveTab::Files)
+        {
             vec![
                 Constraint::Length(header_height),
                 Constraint::Length(3),
@@ -78,6 +79,9 @@ impl App {
             if wide {
                 self.draw_changes_dividers(frame);
             }
+        } else if self.shell.active_tab == ActiveTab::Files {
+            self.draw_file_filter(frame, vertical[1]);
+            self.draw_explorer(frame, vertical[2]);
         } else {
             self.draw_graph_filter(frame, vertical[1]);
             self.draw_history(frame, vertical[2]);

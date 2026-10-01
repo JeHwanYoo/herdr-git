@@ -24,6 +24,7 @@ use super::{App, theme};
 pub(super) enum SelectionSurface {
     Changes,
     Preview,
+    File,
 }
 
 #[derive(Default)]
@@ -54,6 +55,8 @@ pub(super) struct ReviewState {
     pub(super) changes: Selection,
     pub(super) preview: Selection,
     pub(super) preview_cursor: (ReviewSide, usize),
+    pub(super) file: Selection,
+    pub(super) file_cursor: usize,
     blame: Option<SelectionBlame>,
 }
 
@@ -63,6 +66,8 @@ impl Default for ReviewState {
             changes: Selection::default(),
             preview: Selection::default(),
             preview_cursor: (ReviewSide::After, 0),
+            file: Selection::default(),
+            file_cursor: 0,
             blame: None,
         }
     }
@@ -70,11 +75,13 @@ impl Default for ReviewState {
 
 impl ReviewState {
     pub(super) fn is_selecting(&self) -> bool {
-        self.changes.is_selecting() || self.preview.is_selecting()
+        self.changes.is_selecting() || self.preview.is_selecting() || self.file.is_selecting()
     }
 
     pub(super) fn is_dragging(&self) -> bool {
-        self.changes.dragging_selection || self.preview.dragging_selection
+        self.changes.dragging_selection
+            || self.preview.dragging_selection
+            || self.file.dragging_selection
     }
 }
 
@@ -99,10 +106,10 @@ const COPY_OPTIONS: [&str; 2] = ["Code", "Line"];
 
 impl App {
     pub(super) fn selection_surface(&self) -> SelectionSurface {
-        if self.shell.active_tab == ActiveTab::History {
-            SelectionSurface::Preview
-        } else {
-            SelectionSurface::Changes
+        match self.shell.active_tab {
+            ActiveTab::History => SelectionSurface::Preview,
+            ActiveTab::Files => SelectionSurface::File,
+            ActiveTab::Changes => SelectionSurface::Changes,
         }
     }
 
@@ -110,6 +117,7 @@ impl App {
         match surface {
             SelectionSurface::Changes => &self.review.changes,
             SelectionSurface::Preview => &self.review.preview,
+            SelectionSurface::File => &self.review.file,
         }
     }
 
@@ -117,6 +125,7 @@ impl App {
         match surface {
             SelectionSurface::Changes => &mut self.review.changes,
             SelectionSurface::Preview => &mut self.review.preview,
+            SelectionSurface::File => &mut self.review.file,
         }
     }
 
@@ -124,6 +133,7 @@ impl App {
         match surface {
             SelectionSurface::Changes => &self.diff.diff_document,
             SelectionSurface::Preview => &self.inspect.commit_preview_document,
+            SelectionSurface::File => self.explorer.preview_document(),
         }
     }
 
@@ -135,6 +145,7 @@ impl App {
                 .get(self.files.change_selected)
                 .map(|change| change.path.as_str()),
             SelectionSurface::Preview => self.inspect.commit_preview_loaded_path.as_deref(),
+            SelectionSurface::File => self.explorer.preview_path(),
         }
     }
 
@@ -142,6 +153,7 @@ impl App {
         match surface {
             SelectionSurface::Changes => (self.diff.diff_side, self.diff.focused_diff_row),
             SelectionSurface::Preview => self.review.preview_cursor,
+            SelectionSurface::File => (ReviewSide::After, self.review.file_cursor),
         }
     }
 
@@ -208,6 +220,7 @@ impl App {
                 self.diff.focused_diff_row = row;
             }
             SelectionSurface::Preview => self.review.preview_cursor = (side, row),
+            SelectionSurface::File => self.review.file_cursor = row,
         }
         let state = self.selection_mut(surface);
         state.code_selection = None;
@@ -246,6 +259,10 @@ impl App {
         self.review.preview = Selection::default();
     }
 
+    pub(super) fn clear_file_selection(&mut self) {
+        self.review.file = Selection::default();
+    }
+
     fn clear_active_selection(&mut self) {
         let surface = self.selection_surface();
         *self.selection_mut(surface) = Selection::default();
@@ -267,8 +284,12 @@ impl App {
     pub(super) fn selection_title(&self, surface: SelectionSurface) -> Option<Line<'static>> {
         let (path, side, lines) = self.selection_lines_on(surface)?;
         let name = path.rsplit('/').next().unwrap_or(&path);
+        let side = match surface {
+            SelectionSurface::File => String::new(),
+            _ => format!("{} · ", side.label()),
+        };
         Some(Line::from(vec![
-            Span::raw(format!("{} · ", side.label())),
+            Span::raw(side),
             Span::styled(
                 format!("{name}:{}", line_numbers_text(&lines)),
                 theme::accent_bold(),
@@ -297,6 +318,7 @@ impl App {
         let focus = match surface {
             SelectionSurface::Changes => PaneFocus::Diff,
             SelectionSurface::Preview => PaneFocus::Preview,
+            SelectionSurface::File => PaneFocus::FilePreview,
         };
         if self.focus != focus {
             return false;
@@ -317,22 +339,24 @@ impl App {
         let selection = self.effective_selection_on(surface)?;
         let (file, _, shown) = self.selection_lines_on(surface)?;
         let target = match surface {
-            SelectionSurface::Changes => &self.diff.diff_target,
+            SelectionSurface::Changes => Some(&self.diff.diff_target),
             SelectionSurface::Preview => {
-                &self.inspect.commit_preview_loaded_target.as_ref()?.target
+                Some(&self.inspect.commit_preview_loaded_target.as_ref()?.target)
             }
+            SelectionSurface::File => None,
         };
         let (side, revision) = match (target, selection.side) {
-            (DiffTarget::CommitAgainstParent { commit, .. }, ReviewSide::After) => {
+            (None, _) => (ReviewSide::Before, None),
+            (Some(DiffTarget::CommitAgainstParent { commit, .. }), ReviewSide::After) => {
                 (ReviewSide::After, Some(commit.clone()))
             }
-            (DiffTarget::CommitAgainstParent { parent, .. }, ReviewSide::Before) => {
+            (Some(DiffTarget::CommitAgainstParent { parent, .. }), ReviewSide::Before) => {
                 (ReviewSide::Before, Some(parent.clone()?))
             }
-            (DiffTarget::WorkingTreeAgainstRevision { base }, _) => {
+            (Some(DiffTarget::WorkingTreeAgainstRevision { base }), _) => {
                 (ReviewSide::Before, Some(base.clone()))
             }
-            (DiffTarget::WorkingTreeAgainstIndex | DiffTarget::IndexAgainstHead, _) => {
+            (Some(DiffTarget::WorkingTreeAgainstIndex | DiffTarget::IndexAgainstHead), _) => {
                 (ReviewSide::Before, None)
             }
         };
@@ -379,6 +403,7 @@ impl App {
                 .commit_preview_loaded_target
                 .as_ref()
                 .and_then(|target| blame_revision(&target.target)),
+            SelectionSurface::File => None,
         };
         Some(SelectionBlameTarget {
             path: self.repository.as_ref()?.root().to_owned(),
@@ -561,7 +586,7 @@ impl App {
                         include_code,
                         include_line,
                         path,
-                        selection.side,
+                        (surface != SelectionSurface::File).then_some(selection.side),
                         &lines,
                         &code,
                     )));

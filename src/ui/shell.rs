@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEvent,
@@ -25,6 +25,7 @@ use super::{App, theme};
 pub(super) enum ActiveTab {
     History,
     Changes,
+    Files,
 }
 
 pub(super) const DEFAULT_ACTIVE_TAB: ActiveTab = ActiveTab::Changes;
@@ -33,6 +34,7 @@ pub(super) const DEFAULT_ACTIVE_TAB: ActiveTab = ActiveTab::Changes;
 pub(super) enum HeaderAction {
     History,
     Changes,
+    Files,
     Commands,
 }
 
@@ -40,6 +42,7 @@ pub(super) enum HeaderAction {
 pub(super) enum AppShortcut {
     Changes,
     History,
+    Files,
     Commands,
     Workspace,
     FilesSearch,
@@ -85,6 +88,8 @@ pub(super) enum PaneFocus {
     Commits,
     Details,
     Preview,
+    Explorer,
+    FilePreview,
 }
 
 impl PaneFocus {
@@ -93,6 +98,7 @@ impl PaneFocus {
             Self::Workspaces => true,
             Self::Files | Self::Diff => tab == ActiveTab::Changes,
             Self::Commits | Self::Details | Self::Preview => tab == ActiveTab::History,
+            Self::Explorer | Self::FilePreview => tab == ActiveTab::Files,
         }
     }
 }
@@ -101,6 +107,7 @@ pub(super) fn default_focus(tab: ActiveTab) -> PaneFocus {
     match tab {
         ActiveTab::Changes => PaneFocus::Files,
         ActiveTab::History => PaneFocus::Commits,
+        ActiveTab::Files => PaneFocus::Explorer,
     }
 }
 
@@ -124,6 +131,7 @@ pub(super) struct ShellState {
     pub(super) alt_event_held: bool,
     pub(super) shortcut_hints: bool,
     pub(super) mouse_position: Option<(u16, u16)>,
+    pub(super) selection_wheel: Option<(Instant, MouseEventKind)>,
     pub(super) error: Option<String>,
 }
 
@@ -139,6 +147,7 @@ impl ShellState {
             alt_event_held: false,
             shortcut_hints: false,
             mouse_position: None,
+            selection_wheel: None,
             error: None,
         }
     }
@@ -189,8 +198,12 @@ impl App {
         match shortcut {
             AppShortcut::Changes => self.set_tab(ActiveTab::Changes),
             AppShortcut::History => self.set_tab(ActiveTab::History),
+            AppShortcut::Files => self.set_tab(ActiveTab::Files),
             AppShortcut::Commands => self.open_commands(),
             AppShortcut::Workspace => self.open_workspace_picker(),
+            AppShortcut::FilesSearch if self.shell.active_tab == ActiveTab::Files => {
+                self.open_file_filter();
+            }
             AppShortcut::FilesSearch => self.open_files_search(),
             AppShortcut::Actions if self.shell.active_tab == ActiveTab::History => {
                 self.open_context_menu(None);
@@ -247,7 +260,8 @@ impl App {
             }
             PaneFocus::Preview => self.focus = PaneFocus::Details,
             PaneFocus::Details => self.focus = PaneFocus::Commits,
-            PaneFocus::Commits => {}
+            PaneFocus::Commits | PaneFocus::Explorer => {}
+            PaneFocus::FilePreview => self.focus = PaneFocus::Explorer,
             PaneFocus::Diff => {
                 self.focus = PaneFocus::Files;
             }
@@ -264,8 +278,14 @@ impl App {
     pub(super) fn handle_shell_mouse(&mut self, mouse: MouseEvent) -> bool {
         let position = (mouse.column, mouse.row).into();
         let over_status = self.shell.status_bar_area.contains(position);
+        let over_info = self.shell.active_tab == ActiveTab::Changes
+            && self.comparison.info_area.contains(position);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
+            MouseEventKind::ScrollRight if over_info => self.scroll_comparison_info(1),
+            MouseEventKind::ScrollLeft if over_info => self.scroll_comparison_info(-1),
+            MouseEventKind::ScrollDown if shift && over_info => self.scroll_comparison_info(1),
+            MouseEventKind::ScrollUp if shift && over_info => self.scroll_comparison_info(-1),
             MouseEventKind::ScrollRight if over_status => self.scroll_status_horizontal(1),
             MouseEventKind::ScrollLeft if over_status => self.scroll_status_horizontal(-1),
             MouseEventKind::ScrollDown if shift && over_status => self.scroll_status_horizontal(1),
@@ -287,6 +307,7 @@ impl App {
                 match header_action_at(mouse.column.saturating_sub(self.shell.tab_area.x)) {
                     Some(HeaderAction::History) => self.set_tab(ActiveTab::History),
                     Some(HeaderAction::Changes) => self.set_tab(ActiveTab::Changes),
+                    Some(HeaderAction::Files) => self.set_tab(ActiveTab::Files),
                     Some(HeaderAction::Commands) => self.open_commands(),
                     None => {}
                 }
@@ -302,6 +323,9 @@ impl App {
             self.focus = default_focus(tab);
         }
         if tab != ActiveTab::History && matches!(self.overlay, Overlay::GraphFilter) {
+            self.overlay = Overlay::None;
+        }
+        if tab != ActiveTab::Files && matches!(self.overlay, Overlay::FileFilter) {
             self.overlay = Overlay::None;
         }
     }
@@ -333,6 +357,9 @@ impl App {
                 self.diff.diff_target = target;
             }
             self.request_background_refresh("Loading changes", RefreshScope::Changes);
+        }
+        if tab == ActiveTab::Files && !switching {
+            self.request_repository_files();
         }
     }
 
@@ -490,7 +517,7 @@ impl App {
     }
 
     pub(super) fn scroll_status_horizontal(&mut self, delta: i16) {
-        let limit = status_horizontal_scroll_limit(
+        let limit = horizontal_scroll_limit(
             self.status_bar_line().width(),
             self.shell.status_bar_area.width,
         );
@@ -531,6 +558,14 @@ impl App {
                 ),
             ),
             (
+                '3',
+                "Files",
+                theme::hover(
+                    tab_style(self.shell.active_tab == ActiveTab::Files),
+                    hovered_header == Some(HeaderAction::Files),
+                ),
+            ),
+            (
                 'P',
                 "Commands",
                 theme::hover(
@@ -568,14 +603,13 @@ impl App {
         );
         if self.shell.active_tab == ActiveTab::History {
             self.draw_graph_actions(frame, tab_action_area);
+        } else if self.shell.active_tab == ActiveTab::Files {
+            self.graph.action_areas.clear();
         } else {
             self.graph.action_areas.clear();
             self.draw_comparison_controls(frame, tab_action_area);
             let info_area = Rect::new(area.x, tab_action_area.bottom() + action_gap, area.width, 1);
-            frame.render_widget(
-                Paragraph::new(self.comparison_info(info_area.width)),
-                info_area,
-            );
+            self.draw_comparison_info(frame, info_area);
         }
     }
 
@@ -585,7 +619,7 @@ impl App {
         self.shell.status_horizontal_scroll = self
             .shell
             .status_horizontal_scroll
-            .min(status_horizontal_scroll_limit(status.width(), area.width));
+            .min(horizontal_scroll_limit(status.width(), area.width));
         let scroll = usize::from(self.shell.status_horizontal_scroll);
         self.shell.status_blame_area = blame_columns
             .map(|(start, end)| {
@@ -615,7 +649,7 @@ pub(super) fn draw_loading(frame: &mut Frame<'_>, elapsed: Duration) {
     );
 }
 
-pub(super) fn status_horizontal_scroll_limit(content_width: usize, viewport_width: u16) -> u16 {
+pub(super) fn horizontal_scroll_limit(content_width: usize, viewport_width: u16) -> u16 {
     content_width
         .saturating_sub(viewport_width as usize)
         .min(u16::MAX as usize) as u16
@@ -629,6 +663,50 @@ pub(super) fn tab_style(active: bool) -> Style {
             .add_modifier(Modifier::BOLD)
     } else {
         theme::hint()
+    }
+}
+
+const SELECTION_WHEEL_INTERVAL: Duration = Duration::from_millis(60);
+
+impl App {
+    pub(super) fn skip_repeated_selection_wheel(&mut self, input: &Event) -> bool {
+        let Event::Mouse(mouse) = input else {
+            return false;
+        };
+        if !self.wheel_moves_selection(mouse) {
+            return false;
+        }
+        let now = Instant::now();
+        if let Some((last, kind)) = self.shell.selection_wheel
+            && kind == mouse.kind
+            && now.duration_since(last) < SELECTION_WHEEL_INTERVAL
+        {
+            return true;
+        }
+        self.shell.selection_wheel = Some((now, mouse.kind));
+        false
+    }
+
+    fn wheel_moves_selection(&self, mouse: &MouseEvent) -> bool {
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+        ) || mouse.modifiers.contains(KeyModifiers::SHIFT)
+        {
+            return false;
+        }
+        let position = (mouse.column, mouse.row).into();
+        match &self.overlay {
+            Overlay::None | Overlay::GraphFilter | Overlay::FileFilter => {}
+            Overlay::LineHistory(dialog) => return !dialog.diff_contains(position),
+            _ => return true,
+        }
+        self.workspaces.repository_list_area.contains(position)
+            || match self.shell.active_tab {
+                ActiveTab::Changes => self.files.list_area.contains(position),
+                ActiveTab::History => self.history_scroll_region_contains(mouse.column, mouse.row),
+                ActiveTab::Files => self.explorer_list_contains(position),
+            }
     }
 }
 
@@ -660,6 +738,7 @@ pub(super) fn app_shortcut_code(code: KeyCode) -> Option<AppShortcut> {
     match character.to_ascii_lowercase() {
         '1' => Some(AppShortcut::Changes),
         '2' => Some(AppShortcut::History),
+        '3' => Some(AppShortcut::Files),
         'p' => Some(AppShortcut::Commands),
         'w' => Some(AppShortcut::Workspace),
         'o' => Some(AppShortcut::FilesSearch),
@@ -754,7 +833,8 @@ pub(super) fn header_action_at(column: u16) -> Option<HeaderAction> {
     match column {
         0..=8 => Some(HeaderAction::Changes),
         11..=17 => Some(HeaderAction::History),
-        20..=29 => Some(HeaderAction::Commands),
+        20..=26 => Some(HeaderAction::Files),
+        29..=38 => Some(HeaderAction::Commands),
         _ => None,
     }
 }
@@ -762,7 +842,8 @@ pub(super) fn header_action_at(column: u16) -> Option<HeaderAction> {
 pub(super) fn next_tab(active: ActiveTab) -> ActiveTab {
     match active {
         ActiveTab::Changes => ActiveTab::History,
-        ActiveTab::History => ActiveTab::Changes,
+        ActiveTab::History => ActiveTab::Files,
+        ActiveTab::Files => ActiveTab::Changes,
     }
 }
 
@@ -782,6 +863,7 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier};
 
+    use super::SELECTION_WHEEL_INTERVAL;
     use crate::git::{ReadError, Repository, RepositoryFingerprint};
     use crate::project::ProjectRegistry;
     use crate::ui::commands::CommandId;
@@ -802,8 +884,8 @@ mod tests {
 
     use super::{
         ActiveTab, AppShortcut, DEFAULT_ACTIVE_TAB, HeaderAction, PaneFocus, alt_modifier_hint,
-        app_shortcut, app_shortcut_code, draw_loading, header_action_at, next_tab, osc52_sequence,
-        shortcut_hints_visible, status_horizontal_scroll_limit, tab_style, write_osc52,
+        app_shortcut, app_shortcut_code, draw_loading, header_action_at, horizontal_scroll_limit,
+        next_tab, osc52_sequence, shortcut_hints_visible, tab_style, write_osc52,
     };
 
     fn diff_result(
@@ -1174,9 +1256,13 @@ mod tests {
         assert_eq!(header_action_at(17), Some(HeaderAction::History));
         assert_eq!(header_action_at(18), None);
         assert_eq!(header_action_at(19), None);
-        assert_eq!(header_action_at(20), Some(HeaderAction::Commands));
+        assert_eq!(header_action_at(20), Some(HeaderAction::Files));
+        assert_eq!(header_action_at(26), Some(HeaderAction::Files));
+        assert_eq!(header_action_at(27), None);
+        assert_eq!(header_action_at(28), None);
         assert_eq!(header_action_at(29), Some(HeaderAction::Commands));
-        assert_eq!(header_action_at(30), None);
+        assert_eq!(header_action_at(38), Some(HeaderAction::Commands));
+        assert_eq!(header_action_at(39), None);
     }
 
     #[test]
@@ -1188,7 +1274,8 @@ mod tests {
         assert_eq!(CommandId::CreateBranchAtHead.quick_action_shortcut(), 'b');
         assert_eq!(CommandId::StashChanges.quick_action_shortcut(), 's');
         assert_eq!(header_action_at(8), Some(HeaderAction::Changes));
-        assert_eq!(header_action_at(20), Some(HeaderAction::Commands));
+        assert_eq!(header_action_at(20), Some(HeaderAction::Files));
+        assert_eq!(header_action_at(29), Some(HeaderAction::Commands));
 
         let mut app = offline_app();
         let plain = render(&mut app, 80, 16);
@@ -1200,8 +1287,8 @@ mod tests {
         let hinted_row = (0..80)
             .map(|column| hinted[(column, 1)].symbol())
             .collect::<String>();
-        assert!(plain_row.starts_with(" Changes    Graph    Commands "));
-        assert!(hinted_row.starts_with("1 Changes  2 Graph  P Commands"));
+        assert!(plain_row.starts_with(" Changes    Graph    Files    Commands "));
+        assert!(hinted_row.starts_with("1 Changes  2 Graph  3 Files  P Commands"));
         let key = &hinted[(0, 1)];
         assert_eq!(key.bg, theme::ACCENT);
         assert!(key.modifier.contains(Modifier::BOLD | Modifier::UNDERLINED));
@@ -1217,7 +1304,7 @@ mod tests {
         let navigation = (0..80)
             .map(|column| buffer[(column, 1)].symbol())
             .collect::<String>();
-        assert!(navigation.starts_with(" Changes    Graph    Commands "));
+        assert!(navigation.starts_with(" Changes    Graph    Files    Commands "));
         assert!(!navigation.contains("History"));
 
         app.set_tab(ActiveTab::History);
@@ -1448,6 +1535,47 @@ mod tests {
     }
 
     #[test]
+    fn selection_lists_take_one_wheel_step_per_notch_and_content_scrolls_freely() {
+        let (root, mut app) = committed_change("wheel-notch");
+        let wheel = |area: Rect, kind, modifiers| MouseEvent {
+            kind,
+            column: area.x + 1,
+            row: area.y,
+            modifiers,
+        };
+        let down = |area| wheel(area, MouseEventKind::ScrollDown, KeyModifiers::NONE);
+        render(&mut app, 120, 40);
+        assert!(app.wheel_moves_selection(&down(app.files.list_area)));
+        assert!(app.wheel_moves_selection(&down(app.workspaces.repository_list_area)));
+        assert!(!app.wheel_moves_selection(&down(app.diff.diff_area)));
+        assert!(!app.wheel_moves_selection(&wheel(
+            app.files.list_area,
+            MouseEventKind::ScrollDown,
+            KeyModifiers::SHIFT
+        )));
+
+        let notch = Event::Mouse(down(app.files.list_area));
+        assert!(!app.skip_repeated_selection_wheel(&notch));
+        assert!(app.skip_repeated_selection_wheel(&notch));
+        let reverse = Event::Mouse(wheel(
+            app.files.list_area,
+            MouseEventKind::ScrollUp,
+            KeyModifiers::NONE,
+        ));
+        assert!(!app.skip_repeated_selection_wheel(&reverse));
+        std::thread::sleep(SELECTION_WHEEL_INTERVAL);
+        assert!(!app.skip_repeated_selection_wheel(&reverse));
+        let content = Event::Mouse(down(app.diff.diff_area));
+        assert!(!app.skip_repeated_selection_wheel(&content));
+        assert!(!app.skip_repeated_selection_wheel(&content));
+
+        app.set_tab(ActiveTab::History);
+        render(&mut app, 120, 40);
+        assert!(app.wheel_moves_selection(&down(app.graph.history_content_area)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn status_bar_scrolls_horizontally_without_rendering_a_scrollbar() {
         let mut app = App::load_registered(
             &PathBuf::from("/a/very/long/repository/path/that/exceeds/the/status/viewport"),
@@ -1456,7 +1584,7 @@ mod tests {
         .unwrap();
         render(&mut app, 40, 12);
         let area = app.shell.status_bar_area;
-        let limit = status_horizontal_scroll_limit(app.status_bar_line().width(), area.width);
+        let limit = horizontal_scroll_limit(app.status_bar_line().width(), area.width);
         assert!(limit > 0);
         let wheel = |kind, modifiers| {
             Event::Mouse(MouseEvent {
@@ -1579,15 +1707,19 @@ mod tests {
     }
 
     #[test]
-    fn changes_is_first_and_tab_cycles_between_both_tabs() {
+    fn changes_is_first_and_tab_cycles_through_every_tab() {
         assert_eq!(DEFAULT_ACTIVE_TAB, ActiveTab::Changes);
         assert_eq!(next_tab(ActiveTab::Changes), ActiveTab::History);
-        assert_eq!(next_tab(ActiveTab::History), ActiveTab::Changes);
+        assert_eq!(next_tab(ActiveTab::History), ActiveTab::Files);
+        assert_eq!(next_tab(ActiveTab::Files), ActiveTab::Changes);
 
         let mut app = offline_app();
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.shell.active_tab, ActiveTab::History);
         assert_eq!(app.focus, PaneFocus::Commits);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.shell.active_tab, ActiveTab::Files);
+        assert_eq!(app.focus, PaneFocus::Explorer);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.shell.active_tab, ActiveTab::Changes);
         assert_eq!(app.focus, PaneFocus::Files);

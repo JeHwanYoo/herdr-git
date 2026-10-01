@@ -275,7 +275,7 @@ impl App {
     pub(super) fn draw_update(&mut self, frame: &mut Frame<'_>, row: Rect) {
         let label = self.update.label();
         self.update.skip_area = Rect::default();
-        let available_width = row.width.saturating_sub(32);
+        let available_width = row.width.saturating_sub(41);
         let skip_label = " Skip this version ";
         let skip_width = if self.update.offers_update()
             && available_width > label.chars().count() as u16 + skip_label.len() as u16

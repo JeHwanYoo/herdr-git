@@ -2163,6 +2163,7 @@ mod tests {
         assert_eq!(buffer[(area.x + 4, area.y + 2)].bg, theme::SURFACE_HOVER);
 
         for _ in 0..15 {
+            app.shell.selection_wheel = None;
             app.handle(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::ScrollDown,
                 column: area.x,

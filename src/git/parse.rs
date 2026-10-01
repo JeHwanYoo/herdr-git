@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use super::{
     BlameInfo, BranchStatus, ChangeSection, ChangedPath, Commit, CommitRef, CommitRefKind,
-    DiffSummary, LineHistoryCommit, WorkingChange, WorktreeReport,
+    DiffSummary, LineChange, LineHistoryCommit, WorkingChange, WorktreeReport,
 };
 
 pub(super) fn parse_history(output: &str) -> Result<Vec<Commit>, String> {
@@ -304,6 +304,54 @@ pub(super) fn parse_numstat(output: &str) -> DiffSummary {
             }
             total
         })
+}
+
+pub(super) fn parse_line_changes(output: &str) -> Vec<LineChange> {
+    let mut changes: Vec<LineChange> = Vec::new();
+    for line in output.lines() {
+        if let Some(header) = line.strip_prefix("@@ ") {
+            let mut ranges = header.split_whitespace();
+            let (Some(old), Some(new)) = (ranges.next(), ranges.next()) else {
+                continue;
+            };
+            let (old_start, old_count) = hunk_range(old.trim_start_matches('-'));
+            let (new_start, new_count) = hunk_range(new.trim_start_matches('+'));
+            changes.push(LineChange {
+                old_start: if old_count == 0 {
+                    old_start + 1
+                } else {
+                    old_start
+                },
+                removed: Vec::with_capacity(old_count),
+                new_start: if new_count == 0 {
+                    new_start + 1
+                } else {
+                    new_start
+                },
+                added: new_count,
+            });
+        } else if let Some(change) = changes.last_mut()
+            && let Some(removed) = line.strip_prefix('-')
+        {
+            change
+                .removed
+                .push(removed.strip_suffix('\r').unwrap_or(removed).to_owned());
+        }
+    }
+    changes
+}
+
+fn hunk_range(range: &str) -> (usize, usize) {
+    let mut parts = range.splitn(2, ',');
+    let start = parts
+        .next()
+        .and_then(|start| start.parse().ok())
+        .unwrap_or(0);
+    let count = parts
+        .next()
+        .map_or(Some(1), |count| count.parse().ok())
+        .unwrap_or(0);
+    (start, count)
 }
 
 pub(super) fn parse_blame_range(output: &str) -> Result<Vec<BlameInfo>, String> {

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use crate::git::{ChangeSection, WorkingChange};
+use crate::ui::path_tree::{PathRowKind, PathTree};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::ui) enum TreeRowKind {
@@ -21,76 +22,6 @@ pub(in crate::ui) struct TreeRow {
     pub(in crate::ui) kind: TreeRowKind,
 }
 
-#[derive(Default)]
-struct DirectoryNode {
-    directories: Vec<(String, DirectoryNode)>,
-    files: Vec<(String, usize)>,
-}
-
-impl DirectoryNode {
-    fn insert(&mut self, components: &[&str], change_index: usize) {
-        match components {
-            [] => {}
-            [name] => self.files.push(((*name).to_owned(), change_index)),
-            [head, rest @ ..] => {
-                let position = match self.directories.iter().position(|(name, _)| name == head) {
-                    Some(position) => position,
-                    None => {
-                        self.directories.push(((*head).to_owned(), Self::default()));
-                        self.directories.len() - 1
-                    }
-                };
-                self.directories[position].1.insert(rest, change_index);
-            }
-        }
-    }
-
-    fn emit(
-        &self,
-        depth: usize,
-        prefix: &str,
-        section_key: &str,
-        collapsed: &HashSet<String>,
-        result: &mut Vec<TreeRow>,
-    ) {
-        let mut directories = self.directories.iter().collect::<Vec<_>>();
-        directories.sort_by_cached_key(|(name, _)| (name.to_lowercase(), name.clone()));
-        for (name, child) in directories {
-            let key = format!("{section_key}{prefix}{name}");
-            let expanded = !collapsed.contains(&key);
-            result.push(TreeRow {
-                depth,
-                label: name.clone(),
-                kind: TreeRowKind::Directory {
-                    key,
-                    expanded,
-                    section: None,
-                },
-            });
-            if expanded {
-                child.emit(
-                    depth + 1,
-                    &format!("{prefix}{name}/"),
-                    section_key,
-                    collapsed,
-                    result,
-                );
-            }
-        }
-        let mut files = self.files.iter().collect::<Vec<_>>();
-        files.sort_by_cached_key(|(name, _)| (name.to_lowercase(), name.clone()));
-        for (name, change_index) in files {
-            result.push(TreeRow {
-                depth,
-                label: name.clone(),
-                kind: TreeRowKind::File {
-                    change_index: *change_index,
-                },
-            });
-        }
-    }
-}
-
 pub(in crate::ui) fn rows(changes: &[WorkingChange], collapsed: &HashSet<String>) -> Vec<TreeRow> {
     let mut result = Vec::new();
     for section in [
@@ -99,17 +30,13 @@ pub(in crate::ui) fn rows(changes: &[WorkingChange], collapsed: &HashSet<String>
         ChangeSection::Staged,
         ChangeSection::Unstaged,
     ] {
-        let mut root = DirectoryNode::default();
-        let mut members = 0;
-        for (change_index, change) in changes
+        let members = changes
             .iter()
             .enumerate()
             .filter(|(_, change)| change.section == section)
-        {
-            root.insert(&change.path.split('/').collect::<Vec<_>>(), change_index);
-            members += 1;
-        }
-        if members == 0 {
+            .map(|(change_index, change)| (change_index, change.path.as_str()))
+            .collect::<Vec<_>>();
+        if members.is_empty() {
             continue;
         }
         let section_key = format!("{}:", section_id(section));
@@ -126,7 +53,27 @@ pub(in crate::ui) fn rows(changes: &[WorkingChange], collapsed: &HashSet<String>
         if section_collapsed {
             continue;
         }
-        root.emit(1, "", &section_key, collapsed, &mut result);
+        let mut rows = Vec::new();
+        PathTree::from_paths(members).emit(
+            1,
+            &section_key,
+            &|key| !collapsed.contains(key),
+            &mut rows,
+        );
+        result.extend(rows.into_iter().map(|row| TreeRow {
+            depth: row.depth,
+            label: row.label,
+            kind: match row.kind {
+                PathRowKind::Directory { key, expanded } => TreeRowKind::Directory {
+                    key,
+                    expanded,
+                    section: None,
+                },
+                PathRowKind::File { index } => TreeRowKind::File {
+                    change_index: index,
+                },
+            },
+        }));
     }
     result
 }

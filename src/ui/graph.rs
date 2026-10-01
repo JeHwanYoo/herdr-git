@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, List, ListItem, ListState, Paragraph, ScrollbarOrientation, ScrollbarState,
+    List, ListItem, ListState, Paragraph, ScrollbarOrientation, ScrollbarState,
 };
 
 use crate::git::{ChangeSection, Commit, CommitRef, CommitRefKind, DiffTarget, WorkingChange};
@@ -375,7 +375,7 @@ impl App {
             .filter(|area| area.contains((column, row).into()))
     }
 
-    fn history_scroll_region_contains(&self, column: u16, row: u16) -> bool {
+    pub(super) fn history_scroll_region_contains(&self, column: u16, row: u16) -> bool {
         let position = (column, row).into();
         self.graph.history_content_area.contains(position)
             || self
@@ -921,23 +921,11 @@ impl App {
 
     pub(super) fn draw_graph_filter(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.graph.filter_area = area;
-        let active = matches!(self.overlay, Overlay::GraphFilter);
-        let mut spans = vec![Span::raw(format!("/ {}", self.graph.query.text))];
-        if active {
-            spans.push(theme::cursor_span(
-                self.graph.query.cursor_started.elapsed(),
-            ));
-        }
-        let style = if active {
-            theme::warning_text()
-        } else {
-            Style::default()
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(spans))
-                .style(style)
-                .block(Block::default().borders(Borders::ALL).title("Filter")),
+        widgets::draw_filter_bar(
+            frame,
             area,
+            &self.graph.query,
+            matches!(self.overlay, Overlay::GraphFilter),
         );
     }
 
@@ -1434,21 +1422,7 @@ fn commit_ref_badges(references: &[CommitRef], width: usize) -> Vec<Span<'static
 }
 
 fn commit_subject_spans(subject: &str, width: usize) -> Vec<Span<'static>> {
-    let visible = truncate_to_width(subject, width);
-    let Some(colon) = visible.find(':') else {
-        return commit_subject_prose_spans(&visible);
-    };
-    let kind = visible[..colon].split('(').next().unwrap_or_default();
-    let Some(color) = theme::commit_type_color(kind) else {
-        return commit_subject_prose_spans(&visible);
-    };
-    let split = colon + 1;
-    let mut spans = vec![Span::styled(
-        visible[..split].to_owned(),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    )];
-    spans.extend(commit_subject_prose_spans(&visible[split..]));
-    spans
+    commit_subject_prose_spans(&truncate_to_width(subject, width))
 }
 
 fn commit_subject_prose_spans(prose: &str) -> Vec<Span<'static>> {
@@ -1788,33 +1762,24 @@ mod tests {
     }
 
     #[test]
-    fn graph_summary_accents_only_convention_numeric_reference_and_sha() {
+    fn graph_summary_accents_only_numeric_reference_and_sha() {
         let subject = "feat(core): English 한국어 API 추가 (#4053)";
         let subject_spans = commit_subject_spans(subject, 80);
-        let convention = subject_spans
-            .iter()
-            .find(|span| span.content == "feat(core):")
-            .expect("conventional commit label");
-        assert_eq!(convention.style.fg, Some(theme::ACCENT));
-        assert!(convention.style.add_modifier.contains(Modifier::BOLD));
         let reference = subject_spans
             .iter()
             .find(|span| span.content == "#4053")
             .expect("numeric reference");
         assert_eq!(reference.style.fg, Some(theme::REFERENCE));
         assert!(reference.style.add_modifier.contains(Modifier::BOLD));
-        let fix = commit_subject_spans("fix: keep tokens", 80);
-        assert_eq!(fix[0].content, "fix:");
-        assert_eq!(fix[0].style.fg, Some(theme::ERROR));
-        let plain = commit_subject_spans("style: no token", 80);
-        assert!(plain.iter().all(|span| span.style.fg.is_none()));
-        for prose in subject_spans
-            .iter()
-            .filter(|span| span.content != "feat(core):" && span.content != "#4053")
-        {
+        for prose in subject_spans.iter().filter(|span| span.content != "#4053") {
             assert_eq!(prose.style.fg, None);
             assert!(!prose.style.add_modifier.contains(Modifier::BOLD));
         }
+        assert!(
+            commit_subject_spans("fix: keep tokens", 80)
+                .iter()
+                .all(|span| span.style.fg.is_none())
+        );
 
         let commit = Commit {
             sha: "f889396123456789".to_owned(),
@@ -2047,6 +2012,7 @@ mod tests {
         render(&mut app, 100, 20);
 
         for _ in 0..10 {
+            app.shell.selection_wheel = None;
             app.handle(wheel(
                 MouseEventKind::ScrollDown,
                 list.x.saturating_add(1),
