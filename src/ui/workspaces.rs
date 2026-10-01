@@ -1692,6 +1692,63 @@ mod tests {
     }
 
     #[test]
+    fn repository_switch_on_the_files_tab_lists_the_new_repository_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("herdr-git-switch-files-{unique}"));
+        let current = base.join("current");
+        let registered = base.join("registered");
+        for root in [&current, &registered] {
+            fs::create_dir_all(root).unwrap();
+            git(root, &["init", "-b", "main"]);
+            git(root, &["config", "user.name", "Test Author"]);
+            git(root, &["config", "user.email", "test@example.com"]);
+            fs::write(root.join("tracked.txt"), "base\n").unwrap();
+            git(root, &["add", "tracked.txt"]);
+            git(root, &["commit", "-m", "Base"]);
+        }
+        let mut registry = temp_registry("switch-files");
+        registry.add(&registered).unwrap();
+        let mut app = App::load_registered(&current, registry).unwrap();
+        let (request_rx, result_tx) = intercept_foreground(&mut app);
+        app.set_tab(ActiveTab::Files);
+        while request_rx.try_recv().is_ok() {}
+
+        app.switch_repository_row(1);
+        let Ok(ForegroundRequest::Switch {
+            id,
+            generation,
+            path,
+        }) = request_rx.try_recv()
+        else {
+            panic!("repository switch request");
+        };
+        let snapshot =
+            load_repository_snapshot(&path, &SyntaxHighlighter::new(), &|| false).unwrap();
+        let new_root = snapshot.repository.root().to_owned();
+        result_tx
+            .send(ForegroundResult::Switch {
+                id,
+                generation,
+                path,
+                result: Ok(Box::new(snapshot)),
+            })
+            .unwrap();
+        app.receive_foreground_results();
+
+        let listed = std::iter::from_fn(|| request_rx.try_recv().ok()).any(|request| {
+            matches!(request, ForegroundRequest::RepositoryFiles { root, .. } if root == new_root)
+        });
+        assert!(
+            listed,
+            "the Files tab requests the switched repository's files"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn repository_switch_enqueues_then_atomically_applies_only_the_matching_snapshot() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -56,6 +56,9 @@ impl App {
             self.refresh.pending = true;
             self.refresh.pending_intent = RefreshIntent::Interaction;
         }
+        if self.shell.active_tab == ActiveTab::Files {
+            self.request_repository_files();
+        }
     }
 
     pub(super) fn load_non_repository_context(&mut self) {
@@ -80,6 +83,7 @@ impl App {
         self.repository_fingerprint = KnownFingerprint::default();
         self.ops.command_context = CommandContext::default();
         self.refresh_remove_project_capability();
+        self.request_repository_files();
     }
 
     pub(super) fn switch_repository_row(&mut self, index: usize) {
