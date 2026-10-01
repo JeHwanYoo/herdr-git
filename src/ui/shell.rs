@@ -95,7 +95,7 @@ pub(super) enum PaneFocus {
 impl PaneFocus {
     fn belongs_to(self, tab: ActiveTab) -> bool {
         match self {
-            Self::Workspaces => tab != ActiveTab::Files,
+            Self::Workspaces => true,
             Self::Files | Self::Diff => tab == ActiveTab::Changes,
             Self::Commits | Self::Details | Self::Preview => tab == ActiveTab::History,
             Self::Explorer | Self::FilePreview => tab == ActiveTab::Files,
@@ -199,6 +199,9 @@ impl App {
             AppShortcut::Files => self.set_tab(ActiveTab::Files),
             AppShortcut::Commands => self.open_commands(),
             AppShortcut::Workspace => self.open_workspace_picker(),
+            AppShortcut::FilesSearch if self.shell.active_tab == ActiveTab::Files => {
+                self.open_explorer_filter();
+            }
             AppShortcut::FilesSearch => self.open_files_search(),
             AppShortcut::Actions if self.shell.active_tab == ActiveTab::History => {
                 self.open_context_menu(None);

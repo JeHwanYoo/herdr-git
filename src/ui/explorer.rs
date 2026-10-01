@@ -1,12 +1,15 @@
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 use crate::git::ReadError;
 
@@ -16,8 +19,16 @@ use super::path_tree::{PathRow, PathRowKind};
 use super::review::{ReviewSide, SelectionSurface};
 use super::shell::PaneFocus;
 use super::syntax::DiffDocument;
-use super::widgets::{self, counted_title, scrolled_content_row_at, viewport_offset};
+use super::widgets::{
+    self, ListCursor, PickerEdit, PickerOutcome, PickerState, TextField, counted_title,
+    picker_edit, scrolled_content_row_at, update_picker, viewport_offset,
+};
 use super::{App, theme};
+use search::{MatchType, SearchResult, SearchService};
+
+mod search;
+
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
 const PREVIEW_WHEEL_LINES: usize = 3;
 const PREVIEW_HORIZONTAL_STEP: usize = 4;
@@ -37,8 +48,29 @@ pub(super) struct ExplorerState {
     preview_scroll: usize,
     preview_horizontal_scroll: usize,
     error: Option<String>,
+    filter: Option<ExplorerFilter>,
+    search: Option<SearchService>,
+    reveal_match: bool,
+    tree_pane: Rect,
     tree_area: Rect,
     preview_area: Rect,
+}
+
+#[derive(Default)]
+struct ExplorerFilter {
+    query: TextField,
+    cursor: ListCursor,
+    results: Vec<SearchResult>,
+    generation: Option<u64>,
+    due: Option<Instant>,
+    searching: bool,
+    error: Option<String>,
+}
+
+impl ExplorerFilter {
+    fn selected(&self) -> Option<&SearchResult> {
+        self.results.get(self.cursor.selected)
+    }
 }
 
 struct ListRead {
@@ -98,10 +130,30 @@ impl ExplorerState {
         &self.preview.document
     }
 
+    fn active_file(&self) -> Option<&str> {
+        match &self.filter {
+            Some(filter) => filter.selected().map(|result| result.path.as_str()),
+            None => self.selected_file(),
+        }
+    }
+
+    fn active_match(&self) -> Option<&SearchResult> {
+        self.filter
+            .as_ref()?
+            .selected()
+            .filter(|result| result.match_type == MatchType::Content)
+    }
+
     pub(super) fn preview_path(&self) -> Option<&str> {
         self.preview_file
             .as_deref()
-            .filter(|file| self.selected_file() == Some(*file))
+            .filter(|file| self.active_file() == Some(*file))
+    }
+
+    pub(super) fn search_pending(&self) -> bool {
+        self.filter
+            .as_ref()
+            .is_some_and(|filter| filter.due.is_some() || filter.searching)
     }
 
     fn reset(&mut self, root: Option<PathBuf>) {
@@ -247,7 +299,7 @@ impl App {
         if !claimed
             || !self.foreground.reads.file_preview.is_current(generation)
             || self.explorer.root.as_deref() != Some(root.as_path())
-            || self.explorer.selected_file() != Some(file.as_str())
+            || self.explorer.active_file() != Some(file.as_str())
         {
             return;
         }
@@ -266,16 +318,199 @@ impl App {
         }
         self.explorer.selected = index.min(self.explorer.rows.len() - 1);
         if let Some(file) = self.explorer.selected_file().map(str::to_owned) {
-            let shown = self.explorer.preview_file.as_ref() == Some(&file);
-            let loading = self
+            self.show_file_preview(file);
+        }
+    }
+
+    fn show_file_preview(&mut self, file: String) {
+        let shown = self.explorer.preview_file.as_ref() == Some(&file);
+        let loading = self
+            .explorer
+            .preview_read
+            .as_ref()
+            .is_some_and(|read| read.file == file);
+        if !shown && !loading {
+            self.request_file_preview(file);
+        }
+    }
+
+    pub(super) fn open_explorer_filter(&mut self) {
+        if self.repository.is_none() {
+            return;
+        }
+        self.focus = PaneFocus::Explorer;
+        if self.explorer.filter.is_none() {
+            self.explorer.filter = Some(ExplorerFilter::default());
+        }
+    }
+
+    fn close_explorer_filter(&mut self) {
+        if let Some(search) = &self.explorer.search {
+            search.cancel();
+        }
+        self.explorer.filter = None;
+        self.explorer.reveal_match = false;
+        self.focus = PaneFocus::Explorer;
+        if let Some(file) = self.explorer.selected_file().map(str::to_owned) {
+            self.show_file_preview(file);
+        }
+    }
+
+    fn show_selected_result(&mut self) {
+        let Some(result) = self
+            .explorer
+            .filter
+            .as_ref()
+            .and_then(ExplorerFilter::selected)
+            .cloned()
+        else {
+            return;
+        };
+        self.explorer.reveal_match = result.line.is_some();
+        self.show_file_preview(result.path);
+    }
+
+    pub(super) fn handle_explorer_filter(&mut self, input: &Event) -> bool {
+        let pointer_in_pane = match input {
+            Event::Mouse(mouse) => self
                 .explorer
-                .preview_read
-                .as_ref()
-                .is_some_and(|read| read.file == file);
-            if !shown && !loading {
-                self.request_file_preview(file);
+                .tree_pane
+                .contains((mouse.column, mouse.row).into()),
+            _ => false,
+        };
+        if matches!(input, Event::Mouse(_)) && !pointer_in_pane {
+            return false;
+        }
+        if !pointer_in_pane && self.focus != PaneFocus::Explorer {
+            return false;
+        }
+        let list_area = self.explorer.tree_area;
+        let Some(filter) = self.explorer.filter.as_mut() else {
+            return false;
+        };
+        let Some(edit) = picker_edit(input, list_area, filter.cursor.scroll, true) else {
+            return pointer_in_pane;
+        };
+        let len = filter.results.len();
+        if let PickerEdit::ClickRow(row) = edit {
+            self.focus = PaneFocus::Explorer;
+            if row < len {
+                filter.cursor.selected = row;
+                self.show_selected_result();
+            }
+            return true;
+        }
+        let outcome = update_picker(
+            PickerState {
+                query: Some(&mut filter.query),
+                cursor: &mut filter.cursor,
+                len,
+                page: usize::from(list_area.height.max(1)),
+            },
+            edit,
+        );
+        match outcome {
+            PickerOutcome::Moved => self.show_selected_result(),
+            PickerOutcome::Filtered => {
+                filter.due = Some(Instant::now() + SEARCH_DEBOUNCE);
+                filter.searching = true;
+            }
+            PickerOutcome::Activate => {
+                if self.explorer.active_file().is_some() {
+                    self.focus = PaneFocus::FilePreview;
+                }
+            }
+            PickerOutcome::Cancel => self.close_explorer_filter(),
+            PickerOutcome::Unchanged => {}
+        }
+        true
+    }
+
+    pub(super) fn tick_explorer_search(&mut self) -> bool {
+        let mut changed = self.start_due_search();
+        let mut show = false;
+        while let Some(update) = self
+            .explorer
+            .search
+            .as_ref()
+            .and_then(SearchService::try_recv)
+        {
+            let Some(filter) = self.explorer.filter.as_mut() else {
+                continue;
+            };
+            if filter.generation != Some(update.generation)
+                || self.explorer.root.as_ref() != Some(&update.root)
+            {
+                continue;
+            }
+            let selected = filter.selected().cloned();
+            filter.results = update.results;
+            filter.error = update.error;
+            filter.searching = !update.done;
+            filter.cursor.selected = selected
+                .and_then(|selected| filter.results.iter().position(|result| *result == selected))
+                .unwrap_or(
+                    filter
+                        .cursor
+                        .selected
+                        .min(filter.results.len().saturating_sub(1)),
+                );
+            changed = true;
+            show = true;
+        }
+        if show {
+            self.show_selected_result();
+        }
+        changed
+    }
+
+    fn start_due_search(&mut self) -> bool {
+        let Some(filter) = self.explorer.filter.as_mut() else {
+            return false;
+        };
+        if filter.due.is_none_or(|due| Instant::now() < due) {
+            return false;
+        }
+        filter.due = None;
+        let query = filter.query.text.clone();
+        let Some(root) = self
+            .explorer
+            .root
+            .clone()
+            .filter(|_| !query.trim().is_empty())
+        else {
+            if let Some(search) = &self.explorer.search {
+                search.cancel();
+            }
+            *filter = ExplorerFilter {
+                query: filter.query.clone(),
+                ..ExplorerFilter::default()
+            };
+            return true;
+        };
+        if self.explorer.search.is_none() {
+            match SearchService::start() {
+                Ok(search) => self.explorer.search = Some(search),
+                Err(error) => {
+                    filter.error = Some(error);
+                    filter.searching = false;
+                    return true;
+                }
             }
         }
+        let search = self
+            .explorer
+            .search
+            .as_ref()
+            .expect("search service started");
+        match search.search(root, query) {
+            Ok(generation) => filter.generation = Some(generation),
+            Err(error) => {
+                filter.error = Some(error);
+                filter.searching = false;
+            }
+        }
+        true
     }
 
     fn move_explorer_selection(&mut self, delta: isize) {
@@ -408,6 +643,7 @@ impl App {
 
     pub(super) fn handle_explorer_key(&mut self, key: KeyEvent) -> bool {
         match self.focus {
+            PaneFocus::Explorer if self.explorer.filter.is_some() => return false,
             PaneFocus::Explorer => match key.code {
                 KeyCode::Down | KeyCode::Char('j') => self.move_explorer_selection(1),
                 KeyCode::Up | KeyCode::Char('k') => self.move_explorer_selection(-1),
@@ -418,6 +654,7 @@ impl App {
                 KeyCode::Right => self.expand_or_enter(),
                 KeyCode::Left => self.collapse_or_leave(),
                 KeyCode::Enter => self.activate_explorer_row(),
+                KeyCode::Char('/') => self.open_explorer_filter(),
                 KeyCode::Char(' ') => {
                     if let Some(PathRowKind::Directory { key, expanded }) =
                         self.explorer.selected_row().map(|row| row.kind.clone())
@@ -455,7 +692,7 @@ impl App {
         let pointer = (mouse.column, mouse.row);
         let wheel = PREVIEW_WHEEL_LINES as isize;
         let step = PREVIEW_HORIZONTAL_STEP as isize;
-        if self.explorer.tree_area.contains(pointer.into()) {
+        if self.explorer.filter.is_none() && self.explorer.tree_area.contains(pointer.into()) {
             match mouse.kind {
                 MouseEventKind::ScrollDown => self.move_explorer_selection(1),
                 MouseEventKind::ScrollUp => self.move_explorer_selection(-1),
@@ -509,13 +746,110 @@ impl App {
             } else {
                 Direction::Vertical
             })
-            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .constraints(if wide {
+                [Constraint::Percentage(35), Constraint::Percentage(65)]
+            } else {
+                [Constraint::Percentage(50), Constraint::Percentage(50)]
+            })
             .split(area);
-        self.draw_explorer_tree(frame, panes[0]);
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(panes[0]);
+        if self.explorer.filter.is_some() {
+            self.draw_explorer_filter(frame, left[0]);
+        } else {
+            self.draw_explorer_tree(frame, left[0]);
+        }
+        self.draw_workspaces(frame, left[1]);
         self.draw_file_preview(frame, panes[1]);
     }
 
+    fn draw_explorer_filter(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        self.explorer.tree_pane = area;
+        let focused = self.focus == PaneFocus::Explorer;
+        let Some(filter) = self.explorer.filter.as_mut() else {
+            return;
+        };
+        let mut title = counted_title("Filter", filter.results.len());
+        if filter.searching {
+            title.push_str(" · Searching…");
+        }
+        frame.render_widget(widgets::pane_block(title, focused), area);
+        let inner = Block::default().borders(Borders::ALL).inner(area);
+        let regions = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(inner);
+        let mut input = vec![
+            Span::styled("Filter: ", theme::hint()),
+            Span::raw(filter.query.text.clone()),
+        ];
+        if focused {
+            input.push(theme::cursor_span(filter.query.cursor_started.elapsed()));
+        }
+        frame.render_widget(Paragraph::new(Line::from(input)), regions[0]);
+        let list = regions[1];
+        self.explorer.tree_area = list;
+        let message = if let Some(error) = &filter.error {
+            Some((error.as_str(), theme::error_text()))
+        } else if filter.query.text.trim().is_empty() {
+            Some(("Type to search file names and contents", theme::hint()))
+        } else if filter.results.is_empty() && !filter.searching {
+            Some(("No matches", theme::hint()))
+        } else {
+            None
+        };
+        if let Some((text, style)) = message {
+            frame.render_widget(
+                Paragraph::new(text.to_owned())
+                    .style(style)
+                    .wrap(Wrap { trim: false }),
+                list,
+            );
+            return;
+        }
+        let height = usize::from(list.height);
+        filter.cursor.scroll = viewport_offset(
+            filter.cursor.scroll,
+            filter.cursor.selected,
+            filter.results.len(),
+            height,
+        );
+        let offset = filter.cursor.scroll;
+        let hovered = scrolled_content_row_at(
+            self.shell.mouse_position,
+            list,
+            filter.results.len(),
+            offset,
+        );
+        let items = filter
+            .results
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(height)
+            .map(|(index, result)| {
+                ListItem::new(search_result_line(result))
+                    .style(theme::hover(Style::default(), hovered == Some(index)))
+            });
+        let selected = filter
+            .cursor
+            .selected
+            .checked_sub(offset)
+            .filter(|row| *row < height);
+        let mut state = ListState::default().with_selected(selected);
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_style(theme::focus_row())
+                .highlight_symbol(theme::LIST_MARKER),
+            list,
+            &mut state,
+        );
+    }
+
     fn draw_explorer_tree(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        self.explorer.tree_pane = area;
         let inner = Block::default().borders(Borders::ALL).inner(area);
         self.explorer.tree_area = inner;
         let count = self
@@ -593,7 +927,7 @@ impl App {
     fn draw_file_preview(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let inner = Block::default().borders(Borders::ALL).inner(area);
         self.explorer.preview_area = inner;
-        let selected = self.explorer.selected_file().map(str::to_owned);
+        let selected = self.explorer.active_file().map(str::to_owned);
         let title = self
             .selection_title(SelectionSurface::File)
             .unwrap_or_else(|| Line::raw(selected.clone().unwrap_or_else(|| "Preview".to_owned())));
@@ -621,6 +955,24 @@ impl App {
         }
         let height = usize::from(inner.height);
         let width = usize::from(inner.width);
+        let target = self.explorer.active_match().and_then(|result| {
+            let row = usize::try_from(result.line?.checked_sub(1)?).ok()?;
+            let source = self.explorer.preview.document.after_source(row)?;
+            let gutter = format!("{:>4} ", row + 1).len();
+            let columns = display_columns(source, result.match_range.as_ref()?);
+            Some((row, gutter + columns.start..gutter + columns.end))
+        });
+        if self.explorer.reveal_match
+            && let Some((row, columns)) = &target
+        {
+            self.explorer.reveal_match = false;
+            self.explorer.preview_scroll = row.saturating_sub(height / 3);
+            self.explorer.preview_horizontal_scroll = if columns.end > width {
+                columns.start.saturating_sub(width / 4)
+            } else {
+                0
+            };
+        }
         let document = &self.explorer.preview.document;
         self.explorer.preview_scroll = self
             .explorer
@@ -647,6 +999,13 @@ impl App {
                 }
             }
         }
+        if let Some((row, columns)) = target
+            && let Some(line) = row
+                .checked_sub(scroll)
+                .and_then(|offset| lines.get_mut(offset))
+        {
+            style_columns(line, columns, theme::search_match());
+        }
         frame.render_widget(
             Paragraph::new(lines).scroll((0, u16::try_from(horizontal).unwrap_or(u16::MAX))),
             inner,
@@ -658,6 +1017,69 @@ impl App {
             scroll,
         );
     }
+}
+
+fn search_result_line(result: &SearchResult) -> Line<'static> {
+    match result.line {
+        Some(line) => Line::from(vec![
+            Span::raw(result.path.clone()),
+            Span::styled(format!(":{line}"), theme::hint()),
+        ]),
+        None => Line::raw(result.path.clone()),
+    }
+}
+
+fn display_columns(source: &str, range: &Range<usize>) -> Range<usize> {
+    let mut column = 0;
+    let mut start = None;
+    let mut end = None;
+    for (index, character) in source.char_indices() {
+        if index == range.start {
+            start = Some(column);
+        }
+        if index == range.end {
+            end = Some(column);
+        }
+        column += if character == '\t' {
+            8 - column % 8
+        } else {
+            character.width().unwrap_or_default()
+        };
+    }
+    let start = start.unwrap_or(column);
+    start..end.unwrap_or(column).max(start)
+}
+
+fn style_columns(line: &mut Line<'static>, columns: Range<usize>, style: Style) {
+    let mut column = 0;
+    let mut spans = Vec::new();
+    for span in line.spans.drain(..) {
+        let mut text = String::new();
+        let mut inside = None;
+        for character in span.content.chars() {
+            let hit = columns.contains(&column);
+            if inside.is_some_and(|previous| previous != hit) {
+                let piece_style = if hit {
+                    span.style
+                } else {
+                    span.style.patch(style)
+                };
+                spans.push(Span::styled(std::mem::take(&mut text), piece_style));
+            }
+            inside = Some(hit);
+            text.push(character);
+            column += character.width().unwrap_or_default();
+        }
+        if !text.is_empty() {
+            let piece_style = if inside == Some(true) {
+                span.style.patch(style)
+            } else {
+                span.style
+            };
+            spans.push(Span::styled(text, piece_style));
+        }
+    }
+    line.spans = spans;
 }
 
 fn explorer_line(row: &PathRow) -> Line<'static> {
@@ -689,7 +1111,7 @@ mod tests {
     use super::super::test_support::{
         committed_change, find_text, intercept_foreground, press, render,
     };
-    use super::super::{App, PendingClipboard};
+    use super::super::{App, PendingClipboard, theme};
 
     fn wait_for_explorer(app: &mut App) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -786,6 +1208,76 @@ mod tests {
         assert!(app.effective_selection_on(SelectionSurface::File).is_none());
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.focus, PaneFocus::Explorer);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn wait_for_search(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.explorer.search_pending() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.tick_explorer_search();
+            app.receive_foreground_results();
+        }
+        assert!(!app.explorer.search_pending(), "search timed out");
+        wait_for_explorer(app);
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for character in text.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn filter_finds_names_and_lines_and_reveals_the_match_in_the_preview() {
+        let (root, mut app) = committed_change("explorer-filter");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let mut source = (1..=40)
+            .map(|line| format!("// line {line}"))
+            .collect::<Vec<_>>();
+        source[29] = "    let answer = compute();".to_owned();
+        fs::write(root.join("src/lib.rs"), source.join("\n")).unwrap();
+        fs::write(root.join("answer.md"), "notes\n").unwrap();
+        app.set_tab(ActiveTab::Files);
+        wait_for_explorer(&mut app);
+        let tree = labels(&app)
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "answer");
+        wait_for_search(&mut app);
+        let buffer = render(&mut app, 120, 40);
+        assert!(find_text(&buffer, "Filter: answer").is_some());
+        let names = app
+            .explorer
+            .filter
+            .as_ref()
+            .unwrap()
+            .results
+            .iter()
+            .map(|result| match result.line {
+                Some(line) => format!("{}:{line}", result.path),
+                None => result.path.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["answer.md", "src/lib.rs:30"]);
+        assert_eq!(app.explorer.preview_path(), Some("answer.md"));
+
+        press(&mut app, KeyCode::Down);
+        wait_for_explorer(&mut app);
+        let buffer = render(&mut app, 120, 40);
+        assert!(find_text(&buffer, "src/lib.rs:30").is_some());
+        let (x, y) = find_text(&buffer, "  30     let answer = compute();").unwrap();
+        assert!(app.explorer.preview_scroll > 0);
+        assert_eq!(buffer[(x + 13, y)].bg, theme::WARNING);
+        assert_ne!(buffer[(x + 12, y)].bg, theme::WARNING);
+        assert_ne!(buffer[(x + 19, y)].bg, theme::WARNING);
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.explorer.filter.is_none());
+        assert_eq!(labels(&app), tree);
         fs::remove_dir_all(root).unwrap();
     }
 

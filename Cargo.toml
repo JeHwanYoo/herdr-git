@@ -9,6 +9,8 @@ repository = "https://github.com/JeHwanYoo/herdr-git"
 
 [dependencies]
 crossterm = "0.28"
+grep = "0.4"
+ignore = "0.4"
 libc = "0.2"
 ratatui = "0.29"
 semver = "1.0"

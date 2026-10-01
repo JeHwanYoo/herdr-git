@@ -363,6 +363,9 @@ impl App {
         if self.handle_comparison_controls(&input) {
             return Ok(false);
         }
+        if self.shell.active_tab == ActiveTab::Files && self.handle_explorer_filter(&input) {
+            return Ok(false);
+        }
         match input {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if self.handle_shortcut(key) || self.handle_workspaces_key(key) {
@@ -584,7 +587,8 @@ impl App {
                 action.kind,
                 crate::ui::lanes::ForegroundKind::BranchTargets { .. }
             )
-        }) {
+        }) || self.explorer.search_pending()
+        {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
@@ -595,6 +599,7 @@ impl App {
         let mut changed = self.receive_foreground_results();
         changed |= self.poll_update();
         changed |= self.receive_history();
+        changed |= self.tick_explorer_search();
         changed |= self.reveal_pending_commit();
         changed |= self.maintenance.tick(
             self.repository.as_ref().map(|repo| repo.root().to_owned()),

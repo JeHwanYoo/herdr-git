@@ -129,6 +129,10 @@ pub(super) fn accent_bold() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
+pub(super) fn search_match() -> Style {
+    Style::default().fg(TEXT_INVERSE).bg(WARNING)
+}
+
 pub(super) fn section_header() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
