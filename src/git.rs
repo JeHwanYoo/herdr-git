@@ -169,6 +169,26 @@ mod tests {
     }
 
     #[test]
+    fn files_lists_tracked_and_untracked_paths_without_ignored_ones() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("herdr-repository-files-{unique}"));
+        fs::create_dir_all(root.join("src")).unwrap();
+        run(&root, &["init", "-b", "main"]);
+        fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        run(&root, &["add", "."]);
+        fs::write(root.join("notes.md"), "draft\n").unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("target/output"), "build\n").unwrap();
+        let files = Repository::discover(&root).unwrap().files().unwrap();
+        assert_eq!(files, [".gitignore", "notes.md", "src/main.rs"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn comparison_last_branch_boundary_and_working_tip() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -25,6 +25,7 @@ use super::{App, theme};
 pub(super) enum ActiveTab {
     History,
     Changes,
+    Files,
 }
 
 pub(super) const DEFAULT_ACTIVE_TAB: ActiveTab = ActiveTab::Changes;
@@ -33,6 +34,7 @@ pub(super) const DEFAULT_ACTIVE_TAB: ActiveTab = ActiveTab::Changes;
 pub(super) enum HeaderAction {
     History,
     Changes,
+    Files,
     Commands,
 }
 
@@ -40,6 +42,7 @@ pub(super) enum HeaderAction {
 pub(super) enum AppShortcut {
     Changes,
     History,
+    Files,
     Commands,
     Workspace,
     FilesSearch,
@@ -85,14 +88,17 @@ pub(super) enum PaneFocus {
     Commits,
     Details,
     Preview,
+    Explorer,
+    FilePreview,
 }
 
 impl PaneFocus {
     fn belongs_to(self, tab: ActiveTab) -> bool {
         match self {
-            Self::Workspaces => true,
+            Self::Workspaces => tab != ActiveTab::Files,
             Self::Files | Self::Diff => tab == ActiveTab::Changes,
             Self::Commits | Self::Details | Self::Preview => tab == ActiveTab::History,
+            Self::Explorer | Self::FilePreview => tab == ActiveTab::Files,
         }
     }
 }
@@ -101,6 +107,7 @@ pub(super) fn default_focus(tab: ActiveTab) -> PaneFocus {
     match tab {
         ActiveTab::Changes => PaneFocus::Files,
         ActiveTab::History => PaneFocus::Commits,
+        ActiveTab::Files => PaneFocus::Explorer,
     }
 }
 
@@ -189,6 +196,7 @@ impl App {
         match shortcut {
             AppShortcut::Changes => self.set_tab(ActiveTab::Changes),
             AppShortcut::History => self.set_tab(ActiveTab::History),
+            AppShortcut::Files => self.set_tab(ActiveTab::Files),
             AppShortcut::Commands => self.open_commands(),
             AppShortcut::Workspace => self.open_workspace_picker(),
             AppShortcut::FilesSearch => self.open_files_search(),
@@ -247,7 +255,8 @@ impl App {
             }
             PaneFocus::Preview => self.focus = PaneFocus::Details,
             PaneFocus::Details => self.focus = PaneFocus::Commits,
-            PaneFocus::Commits => {}
+            PaneFocus::Commits | PaneFocus::Explorer => {}
+            PaneFocus::FilePreview => self.focus = PaneFocus::Explorer,
             PaneFocus::Diff => {
                 self.focus = PaneFocus::Files;
             }
@@ -287,6 +296,7 @@ impl App {
                 match header_action_at(mouse.column.saturating_sub(self.shell.tab_area.x)) {
                     Some(HeaderAction::History) => self.set_tab(ActiveTab::History),
                     Some(HeaderAction::Changes) => self.set_tab(ActiveTab::Changes),
+                    Some(HeaderAction::Files) => self.set_tab(ActiveTab::Files),
                     Some(HeaderAction::Commands) => self.open_commands(),
                     None => {}
                 }
@@ -333,6 +343,9 @@ impl App {
                 self.diff.diff_target = target;
             }
             self.request_background_refresh("Loading changes", RefreshScope::Changes);
+        }
+        if tab == ActiveTab::Files && !switching {
+            self.request_repository_files();
         }
     }
 
@@ -531,6 +544,14 @@ impl App {
                 ),
             ),
             (
+                '3',
+                "Files",
+                theme::hover(
+                    tab_style(self.shell.active_tab == ActiveTab::Files),
+                    hovered_header == Some(HeaderAction::Files),
+                ),
+            ),
+            (
                 'P',
                 "Commands",
                 theme::hover(
@@ -568,6 +589,8 @@ impl App {
         );
         if self.shell.active_tab == ActiveTab::History {
             self.draw_graph_actions(frame, tab_action_area);
+        } else if self.shell.active_tab == ActiveTab::Files {
+            self.graph.action_areas.clear();
         } else {
             self.graph.action_areas.clear();
             self.draw_comparison_controls(frame, tab_action_area);
@@ -660,6 +683,7 @@ pub(super) fn app_shortcut_code(code: KeyCode) -> Option<AppShortcut> {
     match character.to_ascii_lowercase() {
         '1' => Some(AppShortcut::Changes),
         '2' => Some(AppShortcut::History),
+        '3' => Some(AppShortcut::Files),
         'p' => Some(AppShortcut::Commands),
         'w' => Some(AppShortcut::Workspace),
         'o' => Some(AppShortcut::FilesSearch),
@@ -754,7 +778,8 @@ pub(super) fn header_action_at(column: u16) -> Option<HeaderAction> {
     match column {
         0..=8 => Some(HeaderAction::Changes),
         11..=17 => Some(HeaderAction::History),
-        20..=29 => Some(HeaderAction::Commands),
+        20..=26 => Some(HeaderAction::Files),
+        29..=38 => Some(HeaderAction::Commands),
         _ => None,
     }
 }
@@ -762,7 +787,8 @@ pub(super) fn header_action_at(column: u16) -> Option<HeaderAction> {
 pub(super) fn next_tab(active: ActiveTab) -> ActiveTab {
     match active {
         ActiveTab::Changes => ActiveTab::History,
-        ActiveTab::History => ActiveTab::Changes,
+        ActiveTab::History => ActiveTab::Files,
+        ActiveTab::Files => ActiveTab::Changes,
     }
 }
 
@@ -1174,9 +1200,13 @@ mod tests {
         assert_eq!(header_action_at(17), Some(HeaderAction::History));
         assert_eq!(header_action_at(18), None);
         assert_eq!(header_action_at(19), None);
-        assert_eq!(header_action_at(20), Some(HeaderAction::Commands));
+        assert_eq!(header_action_at(20), Some(HeaderAction::Files));
+        assert_eq!(header_action_at(26), Some(HeaderAction::Files));
+        assert_eq!(header_action_at(27), None);
+        assert_eq!(header_action_at(28), None);
         assert_eq!(header_action_at(29), Some(HeaderAction::Commands));
-        assert_eq!(header_action_at(30), None);
+        assert_eq!(header_action_at(38), Some(HeaderAction::Commands));
+        assert_eq!(header_action_at(39), None);
     }
 
     #[test]
@@ -1188,7 +1218,8 @@ mod tests {
         assert_eq!(CommandId::CreateBranchAtHead.quick_action_shortcut(), 'b');
         assert_eq!(CommandId::StashChanges.quick_action_shortcut(), 's');
         assert_eq!(header_action_at(8), Some(HeaderAction::Changes));
-        assert_eq!(header_action_at(20), Some(HeaderAction::Commands));
+        assert_eq!(header_action_at(20), Some(HeaderAction::Files));
+        assert_eq!(header_action_at(29), Some(HeaderAction::Commands));
 
         let mut app = offline_app();
         let plain = render(&mut app, 80, 16);
@@ -1200,8 +1231,8 @@ mod tests {
         let hinted_row = (0..80)
             .map(|column| hinted[(column, 1)].symbol())
             .collect::<String>();
-        assert!(plain_row.starts_with(" Changes    Graph    Commands "));
-        assert!(hinted_row.starts_with("1 Changes  2 Graph  P Commands"));
+        assert!(plain_row.starts_with(" Changes    Graph    Files    Commands "));
+        assert!(hinted_row.starts_with("1 Changes  2 Graph  3 Files  P Commands"));
         let key = &hinted[(0, 1)];
         assert_eq!(key.bg, theme::ACCENT);
         assert!(key.modifier.contains(Modifier::BOLD | Modifier::UNDERLINED));
@@ -1217,7 +1248,7 @@ mod tests {
         let navigation = (0..80)
             .map(|column| buffer[(column, 1)].symbol())
             .collect::<String>();
-        assert!(navigation.starts_with(" Changes    Graph    Commands "));
+        assert!(navigation.starts_with(" Changes    Graph    Files    Commands "));
         assert!(!navigation.contains("History"));
 
         app.set_tab(ActiveTab::History);
@@ -1579,15 +1610,19 @@ mod tests {
     }
 
     #[test]
-    fn changes_is_first_and_tab_cycles_between_both_tabs() {
+    fn changes_is_first_and_tab_cycles_through_every_tab() {
         assert_eq!(DEFAULT_ACTIVE_TAB, ActiveTab::Changes);
         assert_eq!(next_tab(ActiveTab::Changes), ActiveTab::History);
-        assert_eq!(next_tab(ActiveTab::History), ActiveTab::Changes);
+        assert_eq!(next_tab(ActiveTab::History), ActiveTab::Files);
+        assert_eq!(next_tab(ActiveTab::Files), ActiveTab::Changes);
 
         let mut app = offline_app();
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.shell.active_tab, ActiveTab::History);
         assert_eq!(app.focus, PaneFocus::Commits);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.shell.active_tab, ActiveTab::Files);
+        assert_eq!(app.focus, PaneFocus::Explorer);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.shell.active_tab, ActiveTab::Changes);
         assert_eq!(app.focus, PaneFocus::Files);

@@ -8,6 +8,8 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Instant;
 
+use ratatui::text::Line;
+
 use crate::git::{
     BlameInfo, ChangeSection, Commit, CommitDetails, DiffSummary, DiffTarget, GIT_READ_CANCELLED,
     GitOperation, LineHistoryCommit, LocalIdentity, ReadError, Repository, RepositoryFingerprint,
@@ -21,6 +23,7 @@ use crate::project::{
 
 use super::commands::{CommandContext, CommandId};
 use super::files::TreeSelectionKey;
+use super::path_tree::PathTree;
 use super::syntax::{DiffDocument, FoldKey, SyntaxHighlighter};
 use super::workspaces::{RepositoryRow, RepositoryRowKind, repository_rows_from_statuses};
 pub(super) use foreground::start_foreground_workers;
@@ -134,6 +137,8 @@ pub(super) struct ReadCancellations {
     pub(super) selection_blame: Arc<AtomicU64>,
     pub(super) line_history: Arc<AtomicU64>,
     pub(super) switch: Arc<AtomicU64>,
+    pub(super) repository_files: Arc<AtomicU64>,
+    pub(super) file_preview: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,6 +261,18 @@ pub(super) struct PendingDiff {
     pub(super) generation: ReadGeneration,
     pub(super) target: DiffReadTarget,
     pub(super) started: Instant,
+}
+
+#[derive(Debug)]
+pub(super) struct RepositoryFiles {
+    pub(super) paths: Vec<String>,
+    pub(super) tree: PathTree,
+}
+
+#[derive(Debug)]
+pub(super) enum FilePreview {
+    Text(Vec<Line<'static>>),
+    Notice(String),
 }
 
 #[derive(Debug)]
@@ -412,6 +429,17 @@ pub(super) enum ForegroundRequest {
         generation: ReadGeneration,
         target: LineHistoryTarget,
     },
+    RepositoryFiles {
+        id: RequestId,
+        generation: ReadGeneration,
+        root: PathBuf,
+    },
+    FilePreview {
+        id: RequestId,
+        generation: ReadGeneration,
+        root: PathBuf,
+        file: String,
+    },
     AddProject {
         id: RequestId,
         registry: ProjectRegistry,
@@ -442,6 +470,8 @@ impl ForegroundRequest {
             | Self::Blame { .. }
             | Self::SelectionBlame { .. }
             | Self::LineHistory { .. }
+            | Self::RepositoryFiles { .. }
+            | Self::FilePreview { .. }
             | Self::Switch { .. }
             | Self::ComparisonTargets { .. }
             | Self::BranchTargets { .. } => Lane::Read,
@@ -559,6 +589,19 @@ pub(super) enum ForegroundResult {
         id: RequestId,
         generation: ReadGeneration,
         result: Result<Vec<LineHistoryEntry>, ReadError>,
+    },
+    RepositoryFiles {
+        id: RequestId,
+        generation: ReadGeneration,
+        root: PathBuf,
+        result: Result<RepositoryFiles, ReadError>,
+    },
+    FilePreview {
+        id: RequestId,
+        generation: ReadGeneration,
+        root: PathBuf,
+        file: String,
+        result: Result<FilePreview, ReadError>,
     },
     ProjectMutation {
         id: RequestId,

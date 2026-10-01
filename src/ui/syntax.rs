@@ -386,6 +386,31 @@ impl SyntaxHighlighter {
         Some(document)
     }
 
+    pub(super) fn highlight_file_cancellable(
+        &self,
+        text: &str,
+        path: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Vec<Line<'static>>> {
+        let mut highlighter = self
+            .syntax_for_path(path)
+            .map(|syntax| HighlightLines::new(syntax, &self.theme));
+        let mut lines = Vec::new();
+        for (index, code) in text.lines().enumerate() {
+            if cancelled() {
+                return None;
+            }
+            lines.push(highlight_numbered_line(
+                index + 1,
+                code,
+                &mut highlighter,
+                &self.syntaxes,
+                None,
+            ));
+        }
+        Some(lines)
+    }
+
     fn syntax_for_path(&self, path: &str) -> Option<&SyntaxReference> {
         self.syntaxes.find_syntax_for_file(path).ok().flatten()
     }

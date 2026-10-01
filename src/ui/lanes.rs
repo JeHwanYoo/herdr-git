@@ -188,6 +188,8 @@ pub(super) struct ReadGates {
     pub(super) selection_blame: ReadGate,
     pub(super) line_history: ReadGate,
     pub(super) switch: ReadGate,
+    pub(super) repository_files: ReadGate,
+    pub(super) file_preview: ReadGate,
 }
 
 impl ReadGates {
@@ -199,6 +201,8 @@ impl ReadGates {
             selection_blame: ReadGate::new(),
             line_history: ReadGate::new(),
             switch: ReadGate::new(),
+            repository_files: ReadGate::new(),
+            file_preview: ReadGate::new(),
         }
     }
 
@@ -210,6 +214,8 @@ impl ReadGates {
             selection_blame: Arc::clone(&self.selection_blame.cancellation),
             line_history: Arc::clone(&self.line_history.cancellation),
             switch: Arc::clone(&self.switch.cancellation),
+            repository_files: Arc::clone(&self.repository_files.cancellation),
+            file_preview: Arc::clone(&self.file_preview.cancellation),
         }
     }
 
@@ -220,6 +226,8 @@ impl ReadGates {
         self.selection_blame.advance();
         self.line_history.advance();
         self.switch.advance();
+        self.repository_files.advance();
+        self.file_preview.advance();
     }
 }
 
@@ -510,10 +518,13 @@ impl App {
         if changed.history {
             self.request_history_for(intent);
         }
-        if let Some(changes) = changed.changes
-            && !self.apply_changes_refresh(changes)
-        {
-            known.worktree = None;
+        if let Some(changes) = changed.changes {
+            if !self.apply_changes_refresh(changes) {
+                known.worktree = None;
+            }
+            if self.shell.active_tab == ActiveTab::Files {
+                self.request_repository_files();
+            }
         }
         self.ops.command_context = changed.command_context;
         self.sync_uncommitted_row();

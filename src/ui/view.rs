@@ -78,6 +78,8 @@ impl App {
             if wide {
                 self.draw_changes_dividers(frame);
             }
+        } else if self.shell.active_tab == ActiveTab::Files {
+            self.draw_explorer(frame, vertical[1]);
         } else {
             self.draw_graph_filter(frame, vertical[1]);
             self.draw_history(frame, vertical[2]);
