@@ -18,6 +18,7 @@ use super::widgets::{
 use super::{App, theme};
 
 const COMPARISON_TITLE_MAX_WIDTH: usize = 32;
+const COMPARISON_SHORTCUTS: [char; 2] = ['d', 'm'];
 
 pub(super) struct ComparisonState {
     pub mode: Option<ChangesComparison>,
@@ -132,14 +133,14 @@ impl App {
                 if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::ALT) =>
             {
                 match key.code {
-                    KeyCode::Char('3') => Some(0),
-                    KeyCode::Char('4') => Some(1),
+                    KeyCode::Char('d' | 'D') => Some(0),
+                    KeyCode::Char('m' | 'M') => Some(1),
                     _ => None,
                 }
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                KeyCode::Char('£') => Some(0),
-                KeyCode::Char('¢') => Some(1),
+                KeyCode::Char('∂') => Some(0),
+                KeyCode::Char('µ') => Some(1),
                 _ => None,
             },
             _ => left_click(input).and_then(|point| {
@@ -246,7 +247,7 @@ impl App {
             .enumerate()
             .map(|(index, label)| ActionCell {
                 label,
-                shortcut: char::from(b'3' + index as u8),
+                shortcut: COMPARISON_SHORTCUTS[index],
                 icon: if active == index { "●" } else { "○" },
                 enabled: true,
                 selected: active == index,
@@ -588,7 +589,7 @@ mod tests {
         assert_eq!(app.files.changes.len(), 2);
         assert!(app.diff.diff_text.contains("-two"));
         app.handle(Event::Key(KeyEvent::new(
-            KeyCode::Char('3'),
+            KeyCode::Char('d'),
             KeyModifiers::ALT,
         )))
         .unwrap();
