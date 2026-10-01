@@ -963,20 +963,22 @@ impl App {
             offset,
         );
         let mut statuses = HashMap::new();
-        let mut changed_directories = HashSet::new();
         for change in &self.files.changes {
             if change.section == ChangeSection::Commit {
                 continue;
             }
-            statuses
-                .entry(change.path.as_str())
-                .or_insert(change.status.as_str());
-            changed_directories.extend(
-                change
-                    .path
-                    .match_indices('/')
-                    .map(|(end, _)| &change.path[..end]),
-            );
+            let status = change.status.as_str();
+            statuses.entry(change.path.as_str()).or_insert(status);
+            for (end, _) in change.path.match_indices('/') {
+                statuses
+                    .entry(&change.path[..end])
+                    .and_modify(|existing: &mut &str| {
+                        if status_label(existing) != status_label(status) {
+                            *existing = "M";
+                        }
+                    })
+                    .or_insert(status);
+            }
         }
         let explorer = &self.explorer;
         let items = explorer
@@ -986,16 +988,12 @@ impl App {
             .skip(offset)
             .take(height)
             .map(|(index, row)| {
-                let change = match &row.kind {
-                    PathRowKind::Directory { key, .. } => changed_directories
-                        .contains(key.as_str())
-                        .then_some(RowChange::Contains),
-                    PathRowKind::File { index } => explorer
-                        .file_path(*index)
-                        .and_then(|path| statuses.get(path))
-                        .map(|status| RowChange::Status(status)),
+                let path = match &row.kind {
+                    PathRowKind::Directory { key, .. } => Some(key.as_str()),
+                    PathRowKind::File { index } => explorer.file_path(*index),
                 };
-                ListItem::new(explorer_line(row, change))
+                let status = path.and_then(|path| statuses.get(path)).copied();
+                ListItem::new(explorer_line(row, status))
                     .style(theme::hover(Style::default(), hovered == Some(index)))
             });
         let selected = self
@@ -1193,35 +1191,23 @@ fn style_columns(line: &mut Line<'static>, columns: Range<usize>, style: Style) 
     line.spans = spans;
 }
 
-enum RowChange<'a> {
-    Contains,
-    Status(&'a str),
-}
-
-fn explorer_line(row: &PathRow, change: Option<RowChange<'_>>) -> Line<'static> {
+fn explorer_line(row: &PathRow, status: Option<&str>) -> Line<'static> {
     let indent = "  ".repeat(row.depth);
-    let mut spans = match &row.kind {
-        PathRowKind::Directory { expanded, .. } => vec![
-            Span::styled(
-                format!("{indent}{} ", if *expanded { "▾" } else { "▸" }),
-                theme::hint(),
-            ),
-            Span::raw(row.label.clone()),
-        ],
-        PathRowKind::File { .. } => vec![Span::raw(format!("{indent}  {}", row.label))],
+    let name_style = status.map_or_else(Style::default, |status| {
+        Style::default().fg(status_style(status).fg.unwrap_or_default())
+    });
+    let marker = match (&row.kind, status) {
+        (PathRowKind::Directory { expanded, .. }, _) => Span::styled(
+            format!("{indent}{} ", if *expanded { "▾" } else { "▸" }),
+            theme::hint(),
+        ),
+        (PathRowKind::File { .. }, Some(status)) => Span::styled(
+            format!("{indent}{} ", status_label(status)),
+            status_style(status),
+        ),
+        (PathRowKind::File { .. }, None) => Span::raw(format!("{indent}  ")),
     };
-    match change {
-        Some(RowChange::Contains) => spans.push(Span::styled(" •", status_style("M"))),
-        Some(RowChange::Status(status)) => {
-            let style = status_style(status);
-            if let Some(name) = spans.last_mut() {
-                name.style = Style::default().fg(style.fg.unwrap_or_default());
-            }
-            spans.push(Span::styled(format!(" {}", status_label(status)), style));
-        }
-        None => {}
-    }
-    Line::from(spans)
+    Line::from(vec![marker, Span::styled(row.label.clone(), name_style)])
 }
 
 #[cfg(test)]
@@ -1316,7 +1302,7 @@ mod tests {
         app.set_tab(ActiveTab::Files);
         wait_for_explorer(&mut app);
         let buffer = render(&mut app, 100, 30);
-        assert!(find_text(&buffer, "tracked.txt M").is_some());
+        assert!(find_text(&buffer, "M tracked.txt").is_some());
         press(&mut app, KeyCode::Down);
         wait_for_explorer(&mut app);
         assert_eq!(app.explorer.preview_path(), Some("tracked.txt"));
