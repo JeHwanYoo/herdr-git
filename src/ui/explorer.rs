@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -15,13 +15,13 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::git::{ChangeSection, ReadError};
 
-use super::diff::{emphasize_diff_line, padded_diff_lines};
+use super::diff::{emphasize_diff_line, horizontal_line_slice, padded_diff_lines};
 use super::effect::{FilePreview, ForegroundRequest, ReadGeneration, RepositoryFiles, RequestId};
 use super::files::{status_label, status_style};
 use super::overlay::Overlay;
 use super::path_tree::{PathRow, PathRowKind};
 use super::review::{ReviewSide, SelectionSurface};
-use super::shell::PaneFocus;
+use super::shell::{ActiveTab, PaneFocus};
 use super::syntax::DiffDocument;
 use super::widgets::{
     self, ListCursor, TextEdit, TextField, chord, counted_title, scrolled_content_row_at,
@@ -56,6 +56,7 @@ pub(super) struct ExplorerState {
     filter_area: Rect,
     search: Option<SearchService>,
     reveal_match: bool,
+    list_horizontal_scroll: usize,
     tree_pane: Rect,
     tree_area: Rect,
     preview_area: Rect,
@@ -188,6 +189,7 @@ impl App {
         let root = self.repository_root();
         if self.explorer.root != root {
             self.explorer.reset(root.clone());
+            self.clear_file_selection();
         }
         let Some(root) = root else {
             return;
@@ -583,6 +585,51 @@ impl App {
         }
     }
 
+    pub(super) fn explorer_wheel_moves_selection(&self, mouse: &MouseEvent) -> bool {
+        self.shell.active_tab == ActiveTab::Files
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+            )
+            && !mouse.modifiers.contains(KeyModifiers::SHIFT)
+            && self
+                .explorer
+                .tree_area
+                .contains((mouse.column, mouse.row).into())
+    }
+
+    fn explorer_list_width(&self) -> usize {
+        if self.explorer.filter.applied() {
+            self.explorer
+                .filter
+                .results
+                .iter()
+                .map(|result| search_result_line(result).width())
+                .max()
+                .unwrap_or_default()
+        } else {
+            self.explorer
+                .rows
+                .iter()
+                .map(|row| row.depth * 2 + 2 + Line::raw(row.label.as_str()).width())
+                .max()
+                .unwrap_or_default()
+        }
+    }
+
+    fn max_explorer_horizontal_scroll(&self) -> usize {
+        let viewport = usize::from(self.explorer.tree_area.width.saturating_sub(2));
+        self.explorer_list_width().saturating_sub(viewport)
+    }
+
+    fn scroll_explorer_horizontal(&mut self, delta: isize) {
+        self.explorer.list_horizontal_scroll = self
+            .explorer
+            .list_horizontal_scroll
+            .saturating_add_signed(delta)
+            .min(self.max_explorer_horizontal_scroll());
+    }
+
     fn explorer_page(&self) -> isize {
         isize::try_from(self.explorer.tree_area.height.max(1)).unwrap_or(isize::MAX)
     }
@@ -737,10 +784,38 @@ impl App {
             self.open_file_filter();
             return true;
         }
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        if self.explorer.tree_area.contains(pointer.into()) {
+            match mouse.kind {
+                MouseEventKind::ScrollRight => {
+                    self.scroll_explorer_horizontal(1);
+                    return true;
+                }
+                MouseEventKind::ScrollLeft => {
+                    self.scroll_explorer_horizontal(-1);
+                    return true;
+                }
+                MouseEventKind::ScrollDown if shift => {
+                    self.scroll_explorer_horizontal(1);
+                    return true;
+                }
+                MouseEventKind::ScrollUp if shift => {
+                    self.scroll_explorer_horizontal(-1);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if self.explorer.filter.applied() && self.explorer.tree_area.contains(pointer.into()) {
             match mouse.kind {
-                MouseEventKind::ScrollDown => self.move_filter_selection(1),
-                MouseEventKind::ScrollUp => self.move_filter_selection(-1),
+                MouseEventKind::ScrollDown => {
+                    self.focus = PaneFocus::Explorer;
+                    self.move_filter_selection(1);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.focus = PaneFocus::Explorer;
+                    self.move_filter_selection(-1);
+                }
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.focus = PaneFocus::Explorer;
                     let rows = result_rows(&self.explorer.filter.results);
@@ -762,8 +837,14 @@ impl App {
         }
         if self.explorer.tree_area.contains(pointer.into()) {
             match mouse.kind {
-                MouseEventKind::ScrollDown => self.move_explorer_selection(1),
-                MouseEventKind::ScrollUp => self.move_explorer_selection(-1),
+                MouseEventKind::ScrollDown => {
+                    self.focus = PaneFocus::Explorer;
+                    self.move_explorer_selection(1);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.focus = PaneFocus::Explorer;
+                    self.move_explorer_selection(-1);
+                }
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.focus = PaneFocus::Explorer;
                     if let Some(index) = scrolled_content_row_at(
@@ -846,14 +927,20 @@ impl App {
     fn draw_filter_results(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.explorer.tree_pane = area;
         let focused = self.focus == PaneFocus::Explorer;
+        let list = Block::default().borders(Borders::ALL).inner(area);
+        self.explorer.tree_area = list;
+        self.explorer.list_horizontal_scroll = self
+            .explorer
+            .list_horizontal_scroll
+            .min(self.max_explorer_horizontal_scroll());
+        let horizontal = self.explorer.list_horizontal_scroll;
+        let viewport = usize::from(list.width.saturating_sub(2));
         let filter = &mut self.explorer.filter;
         let mut title = counted_title("Matches", filter.results.len());
         if filter.searching {
             title.push_str(" · Searching…");
         }
         frame.render_widget(widgets::pane_block(title, focused), area);
-        let list = Block::default().borders(Borders::ALL).inner(area);
-        self.explorer.tree_area = list;
         let message = if let Some(error) = &filter.error {
             Some((error.as_str(), theme::error_text()))
         } else if filter.results.is_empty() && filter.searching {
@@ -899,7 +986,8 @@ impl App {
                     }
                     ResultRow::Result(result) => search_result_line(&filter.results[result]),
                 };
-                ListItem::new(line).style(theme::hover(Style::default(), hovered == Some(index)))
+                ListItem::new(horizontal_line_slice(line, horizontal, viewport))
+                    .style(theme::hover(Style::default(), hovered == Some(index)))
             });
         let selected = selected_row.checked_sub(offset).filter(|row| *row < height);
         let mut state = ListState::default().with_selected(selected);
@@ -916,6 +1004,12 @@ impl App {
         self.explorer.tree_pane = area;
         let inner = Block::default().borders(Borders::ALL).inner(area);
         self.explorer.tree_area = inner;
+        self.explorer.list_horizontal_scroll = self
+            .explorer
+            .list_horizontal_scroll
+            .min(self.max_explorer_horizontal_scroll());
+        let horizontal = self.explorer.list_horizontal_scroll;
+        let viewport = usize::from(inner.width.saturating_sub(2));
         let count = self
             .explorer
             .files
@@ -993,8 +1087,12 @@ impl App {
                     PathRowKind::File { index } => explorer.file_path(*index),
                 };
                 let status = path.and_then(|path| statuses.get(path)).copied();
-                ListItem::new(explorer_line(row, status))
-                    .style(theme::hover(Style::default(), hovered == Some(index)))
+                ListItem::new(horizontal_line_slice(
+                    explorer_line(row, status),
+                    horizontal,
+                    viewport,
+                ))
+                .style(theme::hover(Style::default(), hovered == Some(index)))
             });
         let selected = self
             .explorer
@@ -1129,13 +1227,11 @@ fn result_rows(results: &[SearchResult]) -> Vec<ResultRow> {
 }
 
 fn search_result_line(result: &SearchResult) -> Line<'static> {
-    match result.line {
-        Some(line) => Line::from(vec![
-            Span::raw(result.path.clone()),
-            Span::styled(format!(":{line}"), theme::hint()),
-        ]),
-        None => Line::raw(result.path.clone()),
+    let mut spans = vec![Span::raw(format!("  {}", result.path))];
+    if let Some(line) = result.line {
+        spans.push(Span::styled(format!(":{line}"), theme::hint()));
     }
+    Line::from(spans)
 }
 
 fn display_columns(source: &str, range: &Range<usize>) -> Range<usize> {
@@ -1383,10 +1479,16 @@ mod tests {
         assert!(find_text(&buffer, "/ answer").is_some());
         assert!(find_text(&buffer, "Matches · 2").is_some());
         let (files_x, files_y) = find_text(&buffer, "Files · 1").expect("file group");
-        assert!(find_text_in_row(&buffer, files_y + 1, "answer.md").is_some());
+        assert_eq!(
+            find_text_in_row(&buffer, files_y + 1, "answer.md"),
+            Some(files_x + 2)
+        );
         let (lines_x, lines_y) = find_text(&buffer, "Lines · 1").expect("line group");
         assert_eq!(lines_x, files_x);
-        assert!(find_text_in_row(&buffer, lines_y + 1, "src/lib.rs:30").is_some());
+        assert_eq!(
+            find_text_in_row(&buffer, lines_y + 1, "src/lib.rs:30"),
+            Some(lines_x + 2)
+        );
         assert!(matches!(app.overlay, Overlay::FileFilter));
         let names = app
             .explorer
@@ -1422,6 +1524,58 @@ mod tests {
         assert!(!app.explorer.filter.applied());
         assert_eq!(labels(&app), tree);
         assert!(find_text(&render(&mut app, 120, 40), "/ answer").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tree_wheel_moves_one_row_per_notch_and_scrolls_long_names_sideways() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+
+        let (root, mut app) = committed_change("explorer-wheel");
+        let long_name = format!("{}.txt", "long-name-".repeat(8));
+        fs::write(root.join(&long_name), "long\n").unwrap();
+        app.set_tab(ActiveTab::Files);
+        wait_for_explorer(&mut app);
+        render(&mut app, 80, 30);
+        let tree = app.explorer.tree_area;
+        let wheel = |kind, modifiers| MouseEvent {
+            kind,
+            column: tree.x + 1,
+            row: tree.y,
+            modifiers,
+        };
+        let outside = MouseEvent {
+            column: app.explorer.preview_area.x + 1,
+            row: app.explorer.preview_area.y,
+            ..wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE)
+        };
+        let down = wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE);
+        assert_eq!(app.wheel_burst_limit(&Event::Mouse(down)), 1);
+        assert_eq!(app.wheel_burst_limit(&Event::Mouse(outside)), 4);
+
+        app.focus = PaneFocus::FilePreview;
+        app.handle(Event::Mouse(down)).unwrap();
+        assert_eq!(app.explorer.selected, 1);
+        assert_eq!(app.focus, PaneFocus::Explorer);
+
+        for _ in 0..200 {
+            app.handle(Event::Mouse(wheel(
+                MouseEventKind::ScrollDown,
+                KeyModifiers::SHIFT,
+            )))
+            .unwrap();
+        }
+        assert_eq!(app.explorer.selected, 1);
+        let scrolled = app.explorer.list_horizontal_scroll;
+        assert!(scrolled > 0);
+        let buffer = render(&mut app, 80, 30);
+        assert!(find_text(&buffer, "long-name-long-name-.txt").is_some());
+        app.handle(Event::Mouse(wheel(
+            MouseEventKind::ScrollLeft,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+        assert_eq!(app.explorer.list_horizontal_scroll, scrolled - 1);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -664,6 +664,17 @@ pub(super) fn tab_style(active: bool) -> Style {
     }
 }
 
+const WHEEL_BURST_LIMIT: usize = 4;
+
+impl App {
+    pub(super) fn wheel_burst_limit(&self, event: &Event) -> usize {
+        match event {
+            Event::Mouse(mouse) if self.explorer_wheel_moves_selection(mouse) => 1,
+            _ => WHEEL_BURST_LIMIT,
+        }
+    }
+}
+
 pub(super) fn is_wheel_event(event: &Event) -> bool {
     matches!(
         event,

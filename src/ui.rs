@@ -139,6 +139,7 @@ pub fn run(path: &Path) -> Result<(), String> {
                     app.curves.reconnect();
                 }
                 let wheel_burst = is_wheel_event(&next);
+                let wheel_limit = app.wheel_burst_limit(&next);
                 let mut close = app.handle(next)?;
                 if wheel_burst {
                     let mut applied = 1;
@@ -148,7 +149,7 @@ pub fn run(path: &Path) -> Result<(), String> {
                         }
                         let queued = event::read().map_err(|error| error.to_string())?;
                         if is_wheel_event(&queued) {
-                            if applied < 4 {
+                            if applied < wheel_limit {
                                 close |= app.handle(queued)?;
                                 applied += 1;
                             }
