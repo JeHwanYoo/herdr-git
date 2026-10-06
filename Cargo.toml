@@ -20,3 +20,6 @@ syntect = "5.2"
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"] }
 two-face = "0.5.1"
 unicode-width = "0.2"
+
+[dev-dependencies]
+ra-ap-rustc_lexer = "=0.100.0"
