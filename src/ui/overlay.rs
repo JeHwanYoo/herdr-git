@@ -67,8 +67,8 @@ impl Overlay {
         }
     }
 
-    pub(super) fn leaves_graph_visible(&self) -> bool {
-        matches!(self, Self::None | Self::GraphFilter)
+    pub(super) fn floats(&self) -> bool {
+        !matches!(self, Self::None | Self::GraphFilter | Self::FileFilter)
     }
 
     pub(super) fn animating(&self) -> bool {

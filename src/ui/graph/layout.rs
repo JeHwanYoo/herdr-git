@@ -11,6 +11,7 @@ pub(super) struct GraphViewport {
     pub(super) rows: usize,
     pub(super) selected: Option<usize>,
     pub(super) hovered: Option<usize>,
+    pub(super) hidden: Rect,
 }
 
 impl GraphViewport {
@@ -22,6 +23,7 @@ impl GraphViewport {
             rows,
             selected: None,
             hovered: None,
+            hidden: Rect::default(),
         }
     }
 }

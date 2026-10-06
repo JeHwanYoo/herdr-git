@@ -20,12 +20,13 @@ pub struct GraphicsPlacement {
 pub struct GraphicsSurface {
     socket: PathBuf,
     pane: String,
+    layer: &'static str,
     cell: (u32, u32),
     stream: Option<UnixStream>,
 }
 
 impl GraphicsSurface {
-    pub fn connect() -> Result<Self, String> {
+    pub fn connect(layer: &'static str) -> Result<Self, String> {
         let socket = env::var_os("HERDR_SOCKET_PATH")
             .ok_or("HERDR_SOCKET_PATH is not set")?
             .into();
@@ -33,6 +34,7 @@ impl GraphicsSurface {
         let mut surface = Self {
             socket,
             pane,
+            layer,
             cell: (0, 0),
             stream: None,
         };
@@ -66,7 +68,7 @@ impl GraphicsSurface {
             request(
                 &mut stream,
                 "pane.graphics.stream",
-                json!({ "pane_id": self.pane }),
+                json!({ "pane_id": self.pane, "layer_id": self.layer }),
             )?;
             self.stream = Some(stream);
         }

@@ -53,6 +53,7 @@ mod overlay;
 mod path_tree;
 mod review;
 mod session;
+mod settings;
 mod shell;
 mod syntax;
 #[cfg(test)]
@@ -119,7 +120,7 @@ pub fn run(path: &Path) -> Result<(), String> {
                 return Ok(());
             }
         };
-        app.curves = CurveLayer::connect();
+        app.curves = CurveLayer::connect(crate::herdr::pane_graphics_enabled());
         app.check_for_update();
         let mut dirty = true;
         loop {
@@ -233,6 +234,7 @@ struct App {
     github_origin: bool,
     shell: ShellState,
     update: update::UpdateState,
+    settings: settings::SettingsState,
     workspaces: WorkspacesState,
     graph: GraphState,
     curves: CurveLayer,
@@ -312,6 +314,7 @@ impl App {
             github_origin,
             shell: ShellState::new(invoking_path),
             update: update::UpdateState::from_environment(),
+            settings: settings::SettingsState::default(),
             workspaces: WorkspacesState::new(project_registry),
             graph: GraphState::new(Vec::new(), false),
             curves: CurveLayer::disabled(),
@@ -380,6 +383,9 @@ impl App {
                 if self.shell.active_tab == ActiveTab::Files && self.handle_explorer_key(key) {
                     return Ok(false);
                 }
+                if self.handle_settings_key(key) {
+                    return Ok(false);
+                }
                 if self.handle_review_key(key) {
                     return Ok(false);
                 }
@@ -392,6 +398,9 @@ impl App {
             }
             Event::Mouse(mouse) => {
                 if self.shell.active_tab == ActiveTab::Files && self.handle_explorer_mouse(mouse) {
+                    return Ok(false);
+                }
+                if self.handle_settings_mouse(mouse) {
                     return Ok(false);
                 }
                 if self.shell.active_tab == ActiveTab::Changes

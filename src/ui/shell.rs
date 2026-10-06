@@ -26,6 +26,7 @@ pub(super) enum ActiveTab {
     History,
     Changes,
     Files,
+    Settings,
 }
 
 pub(super) const DEFAULT_ACTIVE_TAB: ActiveTab = ActiveTab::Changes;
@@ -36,6 +37,7 @@ pub(super) enum HeaderAction {
     Changes,
     Files,
     Commands,
+    Settings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +45,7 @@ pub(super) enum AppShortcut {
     Changes,
     History,
     Files,
+    Settings,
     Commands,
     Workspace,
     FilesSearch,
@@ -61,7 +64,8 @@ pub(super) enum AppShortcut {
     CopySha,
 }
 
-const OPTION_COMPOSED_SHORTCUTS: [(char, AppShortcut); 16] = [
+const OPTION_COMPOSED_SHORTCUTS: [(char, AppShortcut); 17] = [
+    ('≤', AppShortcut::Settings),
     ('π', AppShortcut::Commands),
     ('∑', AppShortcut::Workspace),
     ('ø', AppShortcut::FilesSearch),
@@ -90,6 +94,7 @@ pub(super) enum PaneFocus {
     Preview,
     Explorer,
     FilePreview,
+    Settings,
 }
 
 impl PaneFocus {
@@ -99,6 +104,7 @@ impl PaneFocus {
             Self::Files | Self::Diff => tab == ActiveTab::Changes,
             Self::Commits | Self::Details | Self::Preview => tab == ActiveTab::History,
             Self::Explorer | Self::FilePreview => tab == ActiveTab::Files,
+            Self::Settings => tab == ActiveTab::Settings,
         }
     }
 }
@@ -108,6 +114,7 @@ pub(super) fn default_focus(tab: ActiveTab) -> PaneFocus {
         ActiveTab::Changes => PaneFocus::Files,
         ActiveTab::History => PaneFocus::Commits,
         ActiveTab::Files => PaneFocus::Explorer,
+        ActiveTab::Settings => PaneFocus::Settings,
     }
 }
 
@@ -199,6 +206,7 @@ impl App {
             AppShortcut::Changes => self.set_tab(ActiveTab::Changes),
             AppShortcut::History => self.set_tab(ActiveTab::History),
             AppShortcut::Files => self.set_tab(ActiveTab::Files),
+            AppShortcut::Settings => self.set_tab(ActiveTab::Settings),
             AppShortcut::Commands => self.open_commands(),
             AppShortcut::Workspace => self.open_workspace_picker(),
             AppShortcut::FilesSearch if self.shell.active_tab == ActiveTab::Files => {
@@ -260,7 +268,7 @@ impl App {
             }
             PaneFocus::Preview => self.focus = PaneFocus::Details,
             PaneFocus::Details => self.focus = PaneFocus::Commits,
-            PaneFocus::Commits | PaneFocus::Explorer => {}
+            PaneFocus::Commits | PaneFocus::Explorer | PaneFocus::Settings => {}
             PaneFocus::FilePreview => self.focus = PaneFocus::Explorer,
             PaneFocus::Diff => {
                 self.focus = PaneFocus::Files;
@@ -309,6 +317,7 @@ impl App {
                     Some(HeaderAction::Changes) => self.set_tab(ActiveTab::Changes),
                     Some(HeaderAction::Files) => self.set_tab(ActiveTab::Files),
                     Some(HeaderAction::Commands) => self.open_commands(),
+                    Some(HeaderAction::Settings) => self.set_tab(ActiveTab::Settings),
                     None => {}
                 }
             }
@@ -573,6 +582,14 @@ impl App {
                     hovered_header == Some(HeaderAction::Commands),
                 ),
             ),
+            (
+                ',',
+                "Settings",
+                theme::hover(
+                    tab_style(self.shell.active_tab == ActiveTab::Settings),
+                    hovered_header == Some(HeaderAction::Settings),
+                ),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -603,7 +620,10 @@ impl App {
         );
         if self.shell.active_tab == ActiveTab::History {
             self.draw_graph_actions(frame, tab_action_area);
-        } else if self.shell.active_tab == ActiveTab::Files {
+        } else if matches!(
+            self.shell.active_tab,
+            ActiveTab::Files | ActiveTab::Settings
+        ) {
             self.graph.action_areas.clear();
         } else {
             self.graph.action_areas.clear();
@@ -706,6 +726,7 @@ impl App {
                 ActiveTab::Changes => self.files.list_area.contains(position),
                 ActiveTab::History => self.history_scroll_region_contains(mouse.column, mouse.row),
                 ActiveTab::Files => self.explorer_list_contains(position),
+                ActiveTab::Settings => false,
             }
     }
 }
@@ -739,6 +760,7 @@ pub(super) fn app_shortcut_code(code: KeyCode) -> Option<AppShortcut> {
         '1' => Some(AppShortcut::Changes),
         '2' => Some(AppShortcut::History),
         '3' => Some(AppShortcut::Files),
+        ',' => Some(AppShortcut::Settings),
         'p' => Some(AppShortcut::Commands),
         'w' => Some(AppShortcut::Workspace),
         'o' => Some(AppShortcut::FilesSearch),
@@ -835,6 +857,7 @@ pub(super) fn header_action_at(column: u16) -> Option<HeaderAction> {
         11..=17 => Some(HeaderAction::History),
         20..=26 => Some(HeaderAction::Files),
         29..=38 => Some(HeaderAction::Commands),
+        41..=50 => Some(HeaderAction::Settings),
         _ => None,
     }
 }
@@ -843,7 +866,8 @@ pub(super) fn next_tab(active: ActiveTab) -> ActiveTab {
     match active {
         ActiveTab::Changes => ActiveTab::History,
         ActiveTab::History => ActiveTab::Files,
-        ActiveTab::Files => ActiveTab::Changes,
+        ActiveTab::Files => ActiveTab::Settings,
+        ActiveTab::Settings => ActiveTab::Changes,
     }
 }
 
@@ -1048,6 +1072,7 @@ mod tests {
     #[test]
     fn option_composed_characters_map_to_the_same_shortcuts() {
         for (character, shortcut) in [
+            ('≤', AppShortcut::Settings),
             ('π', AppShortcut::Commands),
             ('∑', AppShortcut::Workspace),
             ('ø', AppShortcut::FilesSearch),
@@ -1711,7 +1736,8 @@ mod tests {
         assert_eq!(DEFAULT_ACTIVE_TAB, ActiveTab::Changes);
         assert_eq!(next_tab(ActiveTab::Changes), ActiveTab::History);
         assert_eq!(next_tab(ActiveTab::History), ActiveTab::Files);
-        assert_eq!(next_tab(ActiveTab::Files), ActiveTab::Changes);
+        assert_eq!(next_tab(ActiveTab::Files), ActiveTab::Settings);
+        assert_eq!(next_tab(ActiveTab::Settings), ActiveTab::Changes);
 
         let mut app = offline_app();
         press(&mut app, KeyCode::Tab);
@@ -1720,6 +1746,9 @@ mod tests {
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.shell.active_tab, ActiveTab::Files);
         assert_eq!(app.focus, PaneFocus::Explorer);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.shell.active_tab, ActiveTab::Settings);
+        assert_eq!(app.focus, PaneFocus::Settings);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.shell.active_tab, ActiveTab::Changes);
         assert_eq!(app.focus, PaneFocus::Files);

@@ -4,6 +4,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -28,6 +29,7 @@ use super::{App, ScrollbarOwner, theme};
 use layout::{GraphLayout, GraphViewport, LayoutNode, ROW_HEIGHT};
 
 pub(super) use curves::CurveLayer;
+use curves::RuleViewport;
 
 mod curves;
 mod glyphs;
@@ -145,6 +147,7 @@ pub(super) struct GraphState {
     pub(super) history_has_more: bool,
     layout: GraphLayout,
     curve_viewport: Option<GraphViewport>,
+    rule_viewport: Option<RuleViewport>,
     pub(super) load_more_area: Rect,
     pub(super) visible: Vec<usize>,
     pub(super) selected: usize,
@@ -170,6 +173,7 @@ impl GraphState {
             visible: (0..commits.len()).collect(),
             layout: GraphLayout::default(),
             curve_viewport: None,
+            rule_viewport: None,
             history_has_more: false,
             load_more_area: Rect::default(),
             commits,
@@ -203,6 +207,7 @@ impl GraphState {
             ..GraphLayout::default()
         };
         self.curve_viewport = None;
+        self.rule_viewport = None;
         self.load_more_area = Rect::default();
         self.visible.clear();
         self.selected = 0;
@@ -1135,6 +1140,13 @@ impl App {
             .graph
             .graph_scroll
             .min(graph_width.saturating_sub(self.graph.graph_visible_width));
+        let gutter = (self.graph.graph_visible_width as u16 + 1).min(area.width);
+        let text_area = Rect {
+            x: area.x + gutter,
+            width: area.width - gutter,
+            ..area
+        };
+        let pixel_rules = self.curves.rules_available();
         let now = SystemTime::now();
         for offset in 0..rows {
             let row = first + offset;
@@ -1157,7 +1169,23 @@ impl App {
                     );
                 }
             }
+            let rule_y = top + ROW_HEIGHT as u16 - 1;
+            if !pixel_rules && rule_y < area.bottom() {
+                rule_blank_cells(
+                    frame.buffer_mut(),
+                    Rect {
+                        y: rule_y,
+                        height: 1,
+                        ..text_area
+                    },
+                );
+            }
         }
+        self.graph.rule_viewport = pixel_rules.then_some(RuleViewport {
+            area: text_area,
+            rows,
+            hidden: Rect::default(),
+        });
         let viewport = GraphViewport {
             selected: Some(self.graph.selected),
             hovered,
@@ -1174,7 +1202,7 @@ impl App {
             )
         };
         self.graph.curve_viewport = None;
-        if self.curves.available() && self.overlay.leaves_graph_visible() {
+        if self.curves.available() {
             self.graph.curve_viewport = Some(viewport);
         } else {
             glyphs::paint(frame.buffer_mut(), &self.graph.layout, &viewport);
@@ -1188,9 +1216,23 @@ impl App {
         }
     }
 
+    pub(super) fn graph_graphics_shown(&self) -> bool {
+        self.graph.curve_viewport.is_some() || self.graph.rule_viewport.is_some()
+    }
+
+    pub(super) fn hide_graph_graphics_under(&mut self, area: Rect) {
+        if let Some(viewport) = &mut self.graph.curve_viewport {
+            viewport.hidden = area;
+        }
+        if let Some(rules) = &mut self.graph.rule_viewport {
+            rules.hidden = area;
+        }
+    }
+
     pub(super) fn present_graph_curves(&mut self) -> bool {
         let viewport = self.graph.curve_viewport.take();
-        self.curves.present(&self.graph.layout, viewport)
+        let rules = self.graph.rule_viewport.take();
+        self.curves.present(&self.graph.layout, viewport, rules)
     }
 
     pub(super) fn draw_context_menu(&self, frame: &mut Frame<'_>, menu: &mut ContextMenu) {
@@ -1309,6 +1351,18 @@ fn mark_clipped_graph(frame: &mut Frame<'_>, x: u16, y: u16, symbol: &str) {
     }
 }
 
+fn rule_blank_cells(buffer: &mut Buffer, row: Rect) {
+    let mut x = row.x;
+    while x < row.right() {
+        let cell = &mut buffer[(x, row.y)];
+        let width = text_display_width(cell.symbol()).max(1);
+        if cell.symbol() == " " {
+            cell.set_style(theme::row_rule());
+        }
+        x = x.saturating_add(width as u16);
+    }
+}
+
 fn commit_rows(
     commit: &Commit,
     width: usize,
@@ -1360,13 +1414,14 @@ fn commit_rows(
         ));
     } else {
         let sha = truncate_to_width(&short_commit(&commit.sha), text_width);
-        let remaining = text_width.saturating_sub(text_display_width(&sha) + 1);
+        let author = truncate_to_width(
+            &commit.author_name,
+            text_width.saturating_sub(text_display_width(&sha) + 2),
+        );
+        let author_start = width.saturating_sub(text_display_width(&author) + 1);
         detail.push(Span::styled(sha, theme::accent()));
-        detail.push(Span::raw(" "));
-        detail.push(Span::styled(
-            truncate_to_width(&commit.author_name, remaining),
-            theme::secondary(),
-        ));
+        pad_spans_to_width(&mut detail, author_start);
+        detail.push(Span::styled(author, theme::secondary()));
     }
     pad_spans_to_width(&mut detail, width);
     [Line::from(title), Line::from(detail)]
@@ -1588,6 +1643,39 @@ mod tests {
     }
 
     #[test]
+    fn commits_are_separated_by_an_underline_without_pane_graphics() {
+        let mut app = offline_app();
+        app.shell.active_tab = ActiveTab::History;
+        app.graph.history_loaded = true;
+        app.graph.commits = (0..3).map(numbered_commit).collect();
+        app.graph.visible = (0..3).collect();
+        app.graph.rebuild_layout();
+        let buffer = render(&mut app, 100, 60);
+        let area = app.graph.history_content_area;
+        assert!(usize::from(area.height) >= 3 * ROW_HEIGHT, "{area:?}");
+        let text_x = area.x + app.graph.graph_visible_width as u16 + 1;
+        let ruled = |x: u16, y: u16| {
+            let cell = &buffer[(x, y)];
+            cell.modifier.contains(Modifier::UNDERLINED)
+                && cell.fg == theme::RULE
+                && cell.underline_color == theme::RULE
+        };
+        for row in 0..3 {
+            let title = area.y + (row * ROW_HEIGHT) as u16;
+            let detail = title + 1;
+            assert!(!ruled(text_x + 9, title), "title of commit {row}");
+            assert!(!ruled(text_x, detail), "the SHA keeps its own color");
+            assert!(
+                ruled(text_x + 9, detail),
+                "gap after the SHA of commit {row}"
+            );
+            assert!(ruled(area.right() - 1, detail), "rule reaches the edge");
+            assert!(!ruled(area.x, detail), "rule leaves the graph gutter");
+        }
+        assert!(app.graph.rule_viewport.is_none());
+    }
+
+    #[test]
     fn wide_graphs_are_clipped_so_the_subject_stays_visible_and_scroll_sideways() {
         let mut app = offline_app();
         app.shell.active_tab = ActiveTab::History;
@@ -1708,7 +1796,9 @@ mod tests {
         assert_eq!((title.width(), detail.width()), (120, 120));
         let title_text = text(&title);
         assert!(title_text.ends_with("25 minutes ago "), "{title_text}");
-        assert_eq!(text(&detail).trim_end(), "    f8893961 Donghyeok Byun");
+        let detail_text = text(&detail);
+        assert!(detail_text.starts_with("    f8893961 "), "{detail_text}");
+        assert!(detail_text.ends_with(" Donghyeok Byun "), "{detail_text}");
         let remote_badge = format!("{} origin/staging", theme::REMOTE_GLYPH);
         let branch_badge = format!("{} feature/customer", theme::BRANCH_GLYPH);
         let tag_badge = format!("{} v0.1.0", theme::TAG_GLYPH);
@@ -1758,7 +1848,9 @@ mod tests {
         assert_eq!((title.width(), detail.width()), (88, 88));
         assert!(text(&title).contains("feat(catalog)"));
         assert!(text(&title).contains("minutes ago"));
-        assert!(text(&detail).contains("f8893961 김선우"));
+        let detail_text = text(&detail);
+        assert!(detail_text.contains("f8893961"), "{detail_text}");
+        assert!(detail_text.ends_with(" 김선우 "), "{detail_text}");
     }
 
     #[test]
