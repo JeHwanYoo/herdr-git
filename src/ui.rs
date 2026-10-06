@@ -13,7 +13,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 
 use crate::git::{LocalIdentity, Repository};
 use crate::project::ProjectRegistry;
@@ -124,6 +124,10 @@ pub fn run(path: &Path) -> Result<(), String> {
         app.check_for_update();
         let mut dirty = true;
         loop {
+            if sync_terminal_size(&mut terminal).map_err(|error| error.to_string())? {
+                app.curves.reconnect();
+                dirty = true;
+            }
             dirty |= app.maybe_auto_refresh();
             dirty |= app.sync_shortcut_hints();
             if dirty || app.animating() {
@@ -137,6 +141,7 @@ pub fn run(path: &Path) -> Result<(), String> {
                 let next = event::read().map_err(|error| error.to_string())?;
                 dirty = true;
                 if matches!(next, Event::Resize(..)) {
+                    terminal.autoresize().map_err(|error| error.to_string())?;
                     app.curves.reconnect();
                 }
                 let wheel_burst = is_wheel_event(&next);
@@ -191,6 +196,12 @@ pub fn run(path: &Path) -> Result<(), String> {
 
     stop_terminal(&mut terminal);
     result
+}
+
+fn sync_terminal_size<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<bool> {
+    let previous = terminal.get_frame().area();
+    terminal.autoresize()?;
+    Ok(terminal.get_frame().area() != previous)
 }
 
 fn start_terminal() -> Result<TuiTerminal, String> {
@@ -688,6 +699,7 @@ mod tests {
     use super::{
         AUTO_FETCH_INTERVAL, AUTO_REFRESH_INTERVAL, ActiveRefresh, App, ForegroundRequest,
         ForegroundResult, ReadCancellations, RefreshResult, keyboard_enhancement_flags,
+        sync_terminal_size,
     };
     use crate::git::DiffTarget;
     use crate::git::GitOperation;
@@ -1596,6 +1608,34 @@ mod tests {
     }
 
     #[test]
+    fn terminal_size_changes_without_resize_events_redraw_the_entire_layout() {
+        let mut app = offline_app();
+        let mut terminal = Terminal::new(TestBackend::new(240, 60)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(!sync_terminal_size(&mut terminal).unwrap());
+
+        for (width, height) in [(120, 30), (120, 45), (240, 60)] {
+            terminal.backend_mut().resize(width, height);
+            assert!(sync_terminal_size(&mut terminal).unwrap());
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+
+            let screen = buffer_text(terminal.backend().buffer());
+            for label in [
+                "Fetch", "Pull", "Commit", "Push", "Branch", "Stash", "After",
+            ] {
+                assert!(
+                    screen.contains(label),
+                    "{label} is visible at {width}x{height}"
+                );
+            }
+            assert_eq!(app.ops.quick_action_areas.len(), 6);
+            assert_eq!(app.diff.after_diff_area.right(), width);
+            assert_eq!(app.shell.status_bar_area.bottom(), height);
+            assert!(!sync_terminal_size(&mut terminal).unwrap());
+        }
+    }
+
+    #[test]
     fn idle_ticks_leave_the_frame_alone_while_pending_work_and_cursors_animate() {
         let mut app = offline_app();
         let (_foreground_rx, foreground_result_tx) = intercept_foreground(&mut app);
@@ -1609,6 +1649,7 @@ mod tests {
         let idle_frame = terminal.backend().buffer().clone();
 
         for _ in 0..2 {
+            assert!(!sync_terminal_size(&mut terminal).unwrap());
             assert!(!app.maybe_auto_refresh(), "an idle tick changes nothing");
             assert!(!app.animating());
         }
