@@ -71,6 +71,7 @@ pub(super) fn selection_row() -> Style {
 
 pub(super) fn row_rule() -> Style {
     Style::default()
+        .fg(RULE)
         .add_modifier(Modifier::UNDERLINED)
         .underline_color(RULE)
 }

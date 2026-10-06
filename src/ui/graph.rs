@@ -4,6 +4,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -1170,13 +1171,13 @@ impl App {
             }
             let rule_y = top + ROW_HEIGHT as u16 - 1;
             if !pixel_rules && rule_y < area.bottom() {
-                frame.buffer_mut().set_style(
+                rule_blank_cells(
+                    frame.buffer_mut(),
                     Rect {
                         y: rule_y,
                         height: 1,
                         ..text_area
                     },
-                    theme::row_rule(),
                 );
             }
         }
@@ -1347,6 +1348,18 @@ fn graph_view_width(width: usize) -> usize {
 fn mark_clipped_graph(frame: &mut Frame<'_>, x: u16, y: u16, symbol: &str) {
     if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
         cell.set_symbol(symbol).set_style(theme::hint());
+    }
+}
+
+fn rule_blank_cells(buffer: &mut Buffer, row: Rect) {
+    let mut x = row.x;
+    while x < row.right() {
+        let cell = &mut buffer[(x, row.y)];
+        let width = text_display_width(cell.symbol()).max(1);
+        if cell.symbol() == " " {
+            cell.set_style(theme::row_rule());
+        }
+        x = x.saturating_add(width as u16);
     }
 }
 
@@ -1643,13 +1656,19 @@ mod tests {
         let text_x = area.x + app.graph.graph_visible_width as u16 + 1;
         let ruled = |x: u16, y: u16| {
             let cell = &buffer[(x, y)];
-            cell.modifier.contains(Modifier::UNDERLINED) && cell.underline_color == theme::RULE
+            cell.modifier.contains(Modifier::UNDERLINED)
+                && cell.fg == theme::RULE
+                && cell.underline_color == theme::RULE
         };
         for row in 0..3 {
             let title = area.y + (row * ROW_HEIGHT) as u16;
             let detail = title + 1;
-            assert!(!ruled(text_x, title), "title of commit {row}");
-            assert!(ruled(text_x, detail), "detail of commit {row}");
+            assert!(!ruled(text_x + 9, title), "title of commit {row}");
+            assert!(!ruled(text_x, detail), "the SHA keeps its own color");
+            assert!(
+                ruled(text_x + 9, detail),
+                "gap after the SHA of commit {row}"
+            );
             assert!(ruled(area.right() - 1, detail), "rule reaches the edge");
             assert!(!ruled(area.x, detail), "rule leaves the graph gutter");
         }
