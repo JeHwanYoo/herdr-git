@@ -37,7 +37,9 @@ This builds the release binary, links the local checkout, and adds a `prefix+u` 
 
 Keep each pull request focused on one problem. Follow [AGENTS.md](AGENTS.md) and the module rules in [src/AGENTS.md](src/AGENTS.md). Write code that explains itself without comments.
 
-For code changes, run `just check` before requesting review. It checks formatting, runs Clippy with warnings treated as errors, and runs the tests. Add regression tests when the risk and impact justify them. For UI changes, test the affected workflow in Herdr and include screenshots when they help show the result. Use a disposable repository when testing Git operations that change files or history.
+For code changes, run `just check` before requesting review. It rejects Rust comments, checks formatting, runs Clippy with warnings treated as errors, and runs the tests. Add regression tests when the risk and impact justify them. For UI changes, test the affected workflow in Herdr and include screenshots when they help show the result. Use a disposable repository when testing Git operations that change files or history.
+
+Run `just check-comments` to check comments alone. This scans tracked Rust files and untracked Rust files that Git does not ignore, including tests and examples. Line, block, and documentation comments are forbidden; comment markers inside literals are allowed. Violations report the file, line, and column. CI runs the same check.
 
 For documentation changes, check links, commands, and formatting. Keep README.md focused on current usage. Describe feature changes and their context in your pull request.
 

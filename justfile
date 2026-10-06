@@ -4,7 +4,10 @@ build:
 test:
     cargo test --locked
 
-check:
+check-comments:
+    cargo test --locked --test no_comments
+
+check: check-comments
     cargo fmt --all -- --check
     cargo clippy --locked --all-targets -- -D warnings
     cargo test --locked
