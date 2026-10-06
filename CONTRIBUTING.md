@@ -12,7 +12,7 @@ Remove private repository data and credentials from logs and screenshots.
 
 ## Set up development
 
-Install Rust 1.88 or later with rustfmt and Clippy, Git, and [just](https://just.systems/man/en/installation.html). To run the plugin, you also need Herdr 0.8.0 or later on macOS or Linux. The linking script uses a POSIX shell and awk.
+Install Rust 1.88 or later with rustfmt and Clippy, Git, and [just](https://just.systems/man/en/installation.html). To run the plugin, you also need Herdr 0.9.0 or later on macOS or Linux. The linking script uses a POSIX shell and awk.
 
 1. Open [JeHwanYoo/herdr-git](https://github.com/JeHwanYoo/herdr-git) on GitHub and click **Fork** to create a copy under your account.
 2. Clone your fork below. Replace `YOUR_USERNAME` with your GitHub username.

@@ -6,7 +6,7 @@ A Git client for Herdr.
 
 ## Install
 
-Requires Herdr 0.8.0 or later on macOS or Linux.
+Requires Herdr 0.9.0 or later on macOS or Linux.
 
 ```sh
 herdr plugin install JeHwanYoo/herdr-git
@@ -47,11 +47,11 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 
 ## Graph rendering
 
-The Graph draws its lanes with box-drawing characters. When Herdr pane graphics are enabled, it draws antialiased curves and thin rules between commits instead. Enable pane graphics in `~/.config/herdr/config.toml` and restart Herdr:
+When Herdr pane graphics are on, the Graph draws antialiased curves and thin rules between commits. Herdr turns them on by default in terminals that support the Kitty graphics protocol. Otherwise the Graph uses box-drawing characters. To turn pane graphics off, add this to `~/.config/herdr/config.toml` and restart Herdr:
 
 ```toml
 [terminal]
-kitty_graphics = true
+kitty_graphics = false
 ```
 
 <table>
