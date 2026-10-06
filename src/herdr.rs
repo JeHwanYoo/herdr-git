@@ -1,17 +1,17 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
-mod config;
 mod graphics;
+mod preferences;
 mod sidebar;
 mod update;
 
-pub(crate) use config::{config_path, kitty_graphics, set_kitty_graphics};
 pub use graphics::{GraphicsPlacement, GraphicsSurface};
+pub(crate) use preferences::{pane_graphics_enabled, save_pane_graphics_enabled};
 pub(crate) use update::{install_update, latest_version, save_skipped_version, skipped_version};
 
 const PLUGIN_ID: &str = "io.github.jehwanyoo.herdr-git";
@@ -214,6 +214,10 @@ pub fn send_agent_request(
 
 fn herdr_command() -> Command {
     Command::new(herdr_binary())
+}
+
+fn state_directory() -> Option<PathBuf> {
+    env::var_os("HERDR_PLUGIN_STATE_DIR").map(PathBuf::from)
 }
 
 fn herdr_binary() -> OsString {

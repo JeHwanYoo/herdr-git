@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -303,6 +304,25 @@ pub(super) fn scrollbar(orientation: ScrollbarOrientation) -> Scrollbar<'static>
         .thumb_style(Style::default().fg(ACCENT))
 }
 
+pub(super) fn changed_area(before: &Buffer, after: &Buffer) -> Rect {
+    let mut bounds: Option<(u16, u16, u16, u16)> = None;
+    for (index, (old, new)) in before.content.iter().zip(&after.content).enumerate() {
+        if old == new {
+            continue;
+        }
+        let (x, y) = after.pos_of(index);
+        bounds = Some(match bounds {
+            Some((left, top, right, bottom)) => {
+                (left.min(x), top.min(y), right.max(x), bottom.max(y))
+            }
+            None => (x, y, x, y),
+        });
+    }
+    bounds.map_or_else(Rect::default, |(left, top, right, bottom)| {
+        Rect::new(left, top, right - left + 1, bottom - top + 1)
+    })
+}
+
 pub(super) fn pane_block<'a>(title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
     let block = Block::default().borders(Borders::ALL).title(title);
     if focused {
@@ -359,6 +379,17 @@ mod tests {
     use crate::ui::theme::{ACCENT, ERROR, HINT, MUTED, SURFACE_FOCUS, SURFACE_HOVER, error_title};
 
     use super::*;
+
+    #[test]
+    fn changed_area_bounds_every_cell_a_dialog_drew() {
+        let area = Rect::new(0, 0, 20, 10);
+        let before = Buffer::empty(area);
+        let mut after = before.clone();
+        assert_eq!(super::changed_area(&before, &after), Rect::default());
+        after[(4, 2)].set_symbol("┌");
+        after[(11, 6)].set_symbol("┘");
+        assert_eq!(super::changed_area(&before, &after), Rect::new(4, 2, 8, 5));
+    }
 
     #[test]
     fn footer_hint_uses_the_hint_style() {

@@ -50,7 +50,7 @@ Module names below refer to children of `ui`; App is defined in `ui.rs`.
 | `history.rs` | History paging and maintenance workers, including scheduling and shutdown |
 | `explorer.rs` | Files tab tree, file preview, and the file search worker |
 | `update.rs` | Plugin update state, background checks and installation, and version button |
-| `settings.rs` | Settings tab, Herdr config reads and writes on a worker, and the manual update check |
+| `settings.rs` | Settings tab: the pane graphics toggle and the manual update check |
 | `widgets.rs` | Reusable UI controls and geometry |
 | `theme.rs` | Visual styles |
 

@@ -47,14 +47,16 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 
 ## Graph rendering
 
-The Graph draws its lanes with box-drawing characters. When Herdr pane graphics are enabled, it draws antialiased curves and thin separators between commits instead. Turn this on or off under **Kitty graphics** in the Settings tab (`Alt+,`), or set it in `~/.config/herdr/config.toml`:
+The Graph draws its lanes with box-drawing characters. When Herdr pane graphics are enabled, it draws antialiased curves and thin rules between commits instead. Enable pane graphics in `~/.config/herdr/config.toml` and restart Herdr:
 
 ```toml
 [terminal]
 kitty_graphics = true
 ```
 
-Herdr 0.8 reads the same key from `[experimental]`. Restart Herdr after changing it. Pane graphics need a terminal that supports the Kitty graphics protocol, such as Ghostty, Kitty, or WezTerm. Without it, the Graph keeps using characters.
+Herdr 0.8 reads the same key from `[experimental]`. Pane graphics need a terminal that supports the Kitty graphics protocol, such as Ghostty, Kitty, or WezTerm. Without them, the Graph keeps using characters.
+
+Kitty graphics in the Settings tab (`Alt+,`) switches Herdr Git between the two styles. It is on by default and does not change the Herdr config.
 
 <table>
   <tr>
@@ -73,7 +75,7 @@ Herdr 0.8 reads the same key from `[experimental]`. Restart Herdr after changing
 
 ## Settings
 
-Open the Settings tab with `Alt+,`. It turns Kitty graphics on or off after asking for confirmation, and checks GitHub for a newer Herdr Git release.
+Open the Settings tab with `Alt+,`. It switches the Graph between Kitty graphics and box-drawing characters, and checks GitHub for a newer Herdr Git release.
 
 ## Keyboard shortcuts
 

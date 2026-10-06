@@ -370,9 +370,6 @@ impl App {
         if tab == ActiveTab::Files && !switching {
             self.request_repository_files();
         }
-        if tab == ActiveTab::Settings {
-            self.settings.reload();
-        }
     }
 
     pub(super) fn unfocus_diff(&mut self) {
@@ -1743,7 +1740,6 @@ mod tests {
         assert_eq!(next_tab(ActiveTab::Settings), ActiveTab::Changes);
 
         let mut app = offline_app();
-        app.settings.config_path = None;
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.shell.active_tab, ActiveTab::History);
         assert_eq!(app.focus, PaneFocus::Commits);

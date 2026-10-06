@@ -120,7 +120,7 @@ pub fn run(path: &Path) -> Result<(), String> {
                 return Ok(());
             }
         };
-        app.curves = CurveLayer::connect();
+        app.curves = CurveLayer::connect(crate::herdr::pane_graphics_enabled());
         app.check_for_update();
         let mut dirty = true;
         loop {
@@ -314,7 +314,7 @@ impl App {
             github_origin,
             shell: ShellState::new(invoking_path),
             update: update::UpdateState::from_environment(),
-            settings: settings::SettingsState::new(),
+            settings: settings::SettingsState::default(),
             workspaces: WorkspacesState::new(project_registry),
             graph: GraphState::new(Vec::new(), false),
             curves: CurveLayer::disabled(),
@@ -607,7 +607,6 @@ impl App {
     fn maybe_auto_refresh(&mut self) -> bool {
         let mut changed = self.receive_foreground_results();
         changed |= self.poll_update();
-        changed |= self.poll_settings();
         changed |= self.receive_history();
         changed |= self.tick_explorer_search();
         changed |= self.reveal_pending_commit();

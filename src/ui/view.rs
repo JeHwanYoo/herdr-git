@@ -3,6 +3,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use super::App;
 use super::diff::{changes_pane_widths, divider_hit_area};
 use super::shell::ActiveTab;
+use super::widgets::changed_area;
 
 impl App {
     pub(super) fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
@@ -89,6 +90,11 @@ impl App {
             self.draw_history(frame, vertical[2]);
         }
         self.draw_status_bar(frame, *vertical.last().expect("layout has a status bar"));
+        let underneath = (self.overlay.floats() && self.graph_graphics_shown())
+            .then(|| frame.buffer_mut().clone());
         self.draw_overlay(frame);
+        if let Some(underneath) = underneath {
+            self.hide_graph_graphics_under(changed_area(&underneath, frame.buffer_mut()));
+        }
     }
 }

@@ -1145,7 +1145,7 @@ impl App {
             width: area.width - gutter,
             ..area
         };
-        let pixel_rules = self.curves.rules_available() && self.overlay.leaves_graph_visible();
+        let pixel_rules = self.curves.rules_available();
         let now = SystemTime::now();
         for offset in 0..rows {
             let row = first + offset;
@@ -1183,6 +1183,7 @@ impl App {
         self.graph.rule_viewport = pixel_rules.then_some(RuleViewport {
             area: text_area,
             rows,
+            hidden: Rect::default(),
         });
         let viewport = GraphViewport {
             selected: Some(self.graph.selected),
@@ -1200,7 +1201,7 @@ impl App {
             )
         };
         self.graph.curve_viewport = None;
-        if self.curves.available() && self.overlay.leaves_graph_visible() {
+        if self.curves.available() {
             self.graph.curve_viewport = Some(viewport);
         } else {
             glyphs::paint(frame.buffer_mut(), &self.graph.layout, &viewport);
@@ -1211,6 +1212,19 @@ impl App {
         if graph_width > self.graph.graph_scroll + self.graph.graph_visible_width {
             let right = area.x + self.graph.graph_visible_width.saturating_sub(1) as u16;
             mark_clipped_graph(frame, right, area.y, "›");
+        }
+    }
+
+    pub(super) fn graph_graphics_shown(&self) -> bool {
+        self.graph.curve_viewport.is_some() || self.graph.rule_viewport.is_some()
+    }
+
+    pub(super) fn hide_graph_graphics_under(&mut self, area: Rect) {
+        if let Some(viewport) = &mut self.graph.curve_viewport {
+            viewport.hidden = area;
+        }
+        if let Some(rules) = &mut self.graph.rule_viewport {
+            rules.hidden = area;
         }
     }
 

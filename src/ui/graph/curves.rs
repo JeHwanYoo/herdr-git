@@ -16,9 +16,11 @@ type Rgb = (u8, u8, u8);
 pub(in crate::ui) struct RuleViewport {
     pub(in crate::ui) area: Rect,
     pub(in crate::ui) rows: usize,
+    pub(in crate::ui) hidden: Rect,
 }
 
 pub(in crate::ui) struct CurveLayer {
+    enabled: bool,
     curves: GraphicsLayer<(u64, GraphViewport)>,
     rules: GraphicsLayer<RuleViewport>,
 }
@@ -26,24 +28,38 @@ pub(in crate::ui) struct CurveLayer {
 impl CurveLayer {
     pub(in crate::ui) fn disabled() -> Self {
         Self {
+            enabled: true,
             curves: GraphicsLayer::disabled(),
             rules: GraphicsLayer::disabled(),
         }
     }
 
-    pub(in crate::ui) fn connect() -> Self {
+    pub(in crate::ui) fn connect(enabled: bool) -> Self {
         Self {
+            enabled,
             curves: GraphicsLayer::connect(CURVES_LAYER),
             rules: GraphicsLayer::connect(RULES_LAYER),
         }
     }
 
-    pub(in crate::ui) fn available(&self) -> bool {
+    pub(in crate::ui) fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub(in crate::ui) fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    pub(in crate::ui) fn connected(&self) -> bool {
         self.curves.available()
     }
 
+    pub(in crate::ui) fn available(&self) -> bool {
+        self.enabled && self.connected()
+    }
+
     pub(in crate::ui) fn rules_available(&self) -> bool {
-        self.curves.available() && self.rules.available()
+        self.available() && self.rules.available()
     }
 
     pub(in crate::ui) fn reconnect(&mut self) {
@@ -61,7 +77,7 @@ impl CurveLayer {
             viewport.map(|viewport| (viewport.area, (layout.generation, viewport))),
             |(_, viewport), cell| rasterize(layout, viewport, cell),
         );
-        let rules = rules.filter(|_| self.curves.available());
+        let rules = rules.filter(|_| self.available());
         let rules_failed = self
             .rules
             .present(rules.map(|rules| (rules.area, rules)), |rules, cell| {
@@ -169,7 +185,27 @@ fn rasterize_rules(rules: &RuleViewport, cell: (u32, u32)) -> Result<Pixmap, Str
             pixmap.fill_rect(rect, &paint, Transform::identity(), None);
         }
     }
+    clear_hidden(&mut pixmap, rules.area, rules.hidden, cell);
     Ok(pixmap)
+}
+
+fn clear_hidden(pixmap: &mut Pixmap, area: Rect, hidden: Rect, cell: (u32, u32)) {
+    let hidden = hidden.intersection(area);
+    if hidden.is_empty() {
+        return;
+    }
+    if let Some(rect) = tiny_skia::Rect::from_xywh(
+        (u32::from(hidden.x - area.x) * cell.0) as f32,
+        (u32::from(hidden.y - area.y) * cell.1) as f32,
+        (u32::from(hidden.width) * cell.0) as f32,
+        (u32::from(hidden.height) * cell.1) as f32,
+    ) {
+        let paint = Paint {
+            blend_mode: BlendMode::Clear,
+            ..Paint::default()
+        };
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
 }
 
 pub(super) fn rasterize(
@@ -249,6 +285,7 @@ pub(super) fn rasterize(
             fill_circle(&mut pixmap, x, y, radius - stroke_width, paint);
         }
     }
+    clear_hidden(&mut pixmap, viewport.area, viewport.hidden, cell);
     Ok(pixmap)
 }
 
@@ -333,9 +370,10 @@ mod tests {
 
     #[test]
     fn rules_mark_the_bottom_pixel_row_of_each_commit() {
-        let rules = RuleViewport {
+        let mut rules = RuleViewport {
             area: Rect::new(4, 1, 6, 7),
             rows: 4,
+            hidden: Rect::default(),
         };
         let image = rasterize_rules(&rules, (10, 20)).unwrap();
         assert_eq!((image.width(), image.height()), (60, 140));
@@ -349,9 +387,16 @@ mod tests {
             (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
             (rule.0, rule.1, rule.2, 255)
         );
+        rules.hidden = Rect::new(6, 2, 20, 3);
+        let image = rasterize_rules(&rules, (10, 20)).unwrap();
+        assert_eq!(image.pixel(19, 39).unwrap().alpha(), 255);
+        assert_eq!(image.pixel(20, 39).unwrap().alpha(), 0, "dialog hole");
+        assert_eq!(image.pixel(59, 79).unwrap().alpha(), 0, "dialog hole");
+        assert_eq!(image.pixel(20, 119).unwrap().alpha(), 255);
         let huge = RuleViewport {
             area: Rect::new(0, 0, 400, 200),
             rows: 100,
+            hidden: Rect::default(),
         };
         assert!(rasterize_rules(&huge, (128, 256)).is_err());
     }

@@ -5,16 +5,14 @@ use semver::Version;
 use serde_json::Value;
 
 pub(crate) fn skipped_version() -> Option<String> {
-    let directory = std::env::var_os("HERDR_PLUGIN_STATE_DIR")?;
-    std::fs::read_to_string(std::path::PathBuf::from(directory).join("skipped-version")).ok()
+    std::fs::read_to_string(super::state_directory()?.join("skipped-version")).ok()
 }
 
 pub(crate) fn save_skipped_version(tag: &str) {
-    if let Some(directory) = std::env::var_os("HERDR_PLUGIN_STATE_DIR") {
-        let directory = std::path::PathBuf::from(directory);
-        if std::fs::create_dir_all(&directory).is_ok() {
-            let _ = std::fs::write(directory.join("skipped-version"), tag);
-        }
+    if let Some(directory) = super::state_directory()
+        && std::fs::create_dir_all(&directory).is_ok()
+    {
+        let _ = std::fs::write(directory.join("skipped-version"), tag);
     }
 }
 
