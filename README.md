@@ -54,10 +54,6 @@ The Graph draws its lanes with box-drawing characters. When Herdr pane graphics 
 kitty_graphics = true
 ```
 
-Herdr 0.8 reads the same key from `[experimental]`. Pane graphics need a terminal that supports the Kitty graphics protocol, such as Ghostty, Kitty, or WezTerm. Without them, the Graph keeps using characters.
-
-Kitty graphics in the Settings tab (`Alt+,`) switches Herdr Git between the two styles. It is on by default and does not change the Herdr config.
-
 <table>
   <tr>
     <th width="50%"><code>kitty_graphics = true</code></th>
@@ -72,10 +68,6 @@ Kitty graphics in the Settings tab (`Alt+,`) switches Herdr Git between the two 
     <td>Box-drawing characters</td>
   </tr>
 </table>
-
-## Settings
-
-Open the Settings tab with `Alt+,`. It switches the Graph between Kitty graphics and box-drawing characters, and checks GitHub for a newer Herdr Git release.
 
 ## Keyboard shortcuts
 
