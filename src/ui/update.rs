@@ -26,8 +26,14 @@ pub(super) enum UpdateStatus {
     Ready,
 }
 
-enum UpdateResult {
-    Checked(Option<String>),
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CheckOutcome {
+    UpToDate,
+    Failed(String),
+}
+
+pub(super) enum UpdateResult {
+    Checked(Result<Option<String>, String>),
     Installed(Result<(), String>),
 }
 
@@ -39,7 +45,8 @@ pub(super) struct UpdateState {
     skipped: Option<String>,
     pub(super) restart_requested: bool,
     pub(super) executable: Option<PathBuf>,
-    pending: Option<Receiver<UpdateResult>>,
+    pub(super) checked: Option<CheckOutcome>,
+    pub(super) pending: Option<Receiver<UpdateResult>>,
     last_check: Option<Instant>,
 }
 
@@ -53,6 +60,10 @@ impl UpdateState {
 
     fn offers_update(&self) -> bool {
         matches!(&self.status, UpdateStatus::Available(tag) if self.skipped.as_ref() != Some(tag))
+    }
+
+    pub(super) fn checking(&self) -> bool {
+        self.pending.is_some() && !matches!(self.status, UpdateStatus::Installing(_))
     }
 
     pub(super) fn enabled(&self) -> bool {
@@ -84,6 +95,7 @@ impl App {
             return;
         }
         self.update.last_check = Some(Instant::now());
+        self.update.checked = None;
         let (tx, rx) = mpsc::channel();
         if thread::Builder::new()
             .name("herdr-git-update-check".into())
@@ -102,10 +114,15 @@ impl App {
                 Ok(result) => {
                     self.update.pending = None;
                     match result {
-                        UpdateResult::Checked(Some(tag)) => {
+                        UpdateResult::Checked(Ok(Some(tag))) => {
                             self.update.status = UpdateStatus::Available(tag);
                         }
-                        UpdateResult::Checked(None) => return false,
+                        UpdateResult::Checked(Ok(None)) => {
+                            self.update.checked = Some(CheckOutcome::UpToDate);
+                        }
+                        UpdateResult::Checked(Err(error)) => {
+                            self.update.checked = Some(CheckOutcome::Failed(error));
+                        }
                         UpdateResult::Installed(Ok(())) => self.update.status = UpdateStatus::Ready,
                         UpdateResult::Installed(Err(error)) => self.update_failed(error),
                     }
@@ -275,7 +292,7 @@ impl App {
     pub(super) fn draw_update(&mut self, frame: &mut Frame<'_>, row: Rect) {
         let label = self.update.label();
         self.update.skip_area = Rect::default();
-        let available_width = row.width.saturating_sub(41);
+        let available_width = row.width.saturating_sub(53);
         let skip_label = " Skip this version ";
         let skip_width = if self.update.offers_update()
             && available_width > label.chars().count() as u16 + skip_label.len() as u16
@@ -417,9 +434,16 @@ mod tests {
         let mut app = offline_app();
         let (tx, rx) = mpsc::channel();
         app.update.pending = Some(rx);
-        tx.send(UpdateResult::Checked(None)).unwrap();
-        assert!(!app.poll_update());
+        assert!(app.update.checking());
+        tx.send(UpdateResult::Checked(Err("offline".into())))
+            .unwrap();
+        assert!(app.poll_update());
+        assert!(!app.update.checking());
         assert!(app.shell.error.is_none());
+        assert_eq!(
+            app.update.checked,
+            Some(super::CheckOutcome::Failed("offline".into()))
+        );
         assert_eq!(app.update.status, UpdateStatus::Current);
         assert!(!app.update.enabled());
         app.activate_update();

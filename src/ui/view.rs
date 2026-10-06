@@ -82,6 +82,8 @@ impl App {
         } else if self.shell.active_tab == ActiveTab::Files {
             self.draw_file_filter(frame, vertical[1]);
             self.draw_explorer(frame, vertical[2]);
+        } else if self.shell.active_tab == ActiveTab::Settings {
+            self.draw_settings(frame, vertical[1]);
         } else {
             self.draw_graph_filter(frame, vertical[1]);
             self.draw_history(frame, vertical[2]);

@@ -45,6 +45,10 @@ pub(super) enum Overlay {
         root: PathBuf,
         buttons: ConfirmButtons,
     },
+    KittyGraphics {
+        enable: bool,
+        buttons: ConfirmButtons,
+    },
     Confirm {
         command: CommandId,
         operation: GitOperation,
@@ -78,6 +82,7 @@ impl Overlay {
             | Self::Workspace(_)
             | Self::Confirm { .. }
             | Self::RemoveProject { .. }
+            | Self::KittyGraphics { .. }
             | Self::Remotes(_)
             | Self::ContextMenu(_)
             | Self::Action(_)
@@ -209,6 +214,7 @@ impl App {
             Overlay::RemoveProject { .. } => self.handle_remove_project_confirmation(input),
             Overlay::Confirm { .. } => self.handle_confirmation(input),
             Overlay::Update { .. } => self.handle_update_confirmation(input),
+            Overlay::KittyGraphics { .. } => self.handle_kitty_graphics_confirmation(input),
             Overlay::ContextMenu(_) => self.handle_context_menu(input),
             Overlay::Commands(_) => self.handle_commands(input),
         }
@@ -295,6 +301,13 @@ impl App {
             Overlay::RemoveProject { root, mut buttons } => {
                 self.draw_remove_project_confirmation(frame, &root, &mut buttons);
                 Overlay::RemoveProject { root, buttons }
+            }
+            Overlay::KittyGraphics {
+                enable,
+                mut buttons,
+            } => {
+                self.draw_kitty_graphics_confirmation(frame, enable, &mut buttons);
+                Overlay::KittyGraphics { enable, buttons }
             }
             Overlay::Confirm {
                 command,

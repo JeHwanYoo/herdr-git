@@ -109,7 +109,7 @@ impl App {
         match self.shell.active_tab {
             ActiveTab::History => SelectionSurface::Preview,
             ActiveTab::Files => SelectionSurface::File,
-            ActiveTab::Changes => SelectionSurface::Changes,
+            ActiveTab::Changes | ActiveTab::Settings => SelectionSurface::Changes,
         }
     }
 

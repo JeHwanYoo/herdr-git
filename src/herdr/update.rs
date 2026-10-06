@@ -18,7 +18,7 @@ pub(crate) fn save_skipped_version(tag: &str) {
     }
 }
 
-pub(crate) fn latest_version() -> Option<String> {
+pub(crate) fn latest_version() -> Result<Option<String>, String> {
     let output = Command::new("curl")
         .args([
             "--fail",
@@ -36,11 +36,13 @@ pub(crate) fn latest_version() -> Option<String> {
         ])
         .stdin(Stdio::null())
         .output()
-        .ok()?;
+        .map_err(|error| format!("Could not check for updates: {error}"))?;
     if !output.status.success() {
-        return None;
+        return Err("Could not reach the GitHub release page".to_owned());
     }
-    available_version(&serde_json::from_slice::<Value>(&output.stdout).ok()?)
+    let release = serde_json::from_slice::<Value>(&output.stdout)
+        .map_err(|_| "GitHub returned an unreadable release".to_owned())?;
+    Ok(available_version(&release))
 }
 
 fn available_version(release: &Value) -> Option<String> {
