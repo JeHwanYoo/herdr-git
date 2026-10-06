@@ -69,6 +69,12 @@ pub(super) fn selection_row() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+pub(super) fn row_rule() -> Style {
+    Style::default()
+        .add_modifier(Modifier::UNDERLINED)
+        .underline_color(RULE)
+}
+
 pub(super) fn hover(base: Style, hovered: bool) -> Style {
     if hovered {
         base.bg(SURFACE_HOVER)
