@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::parse::{parse_iso_time, relative_time};
@@ -150,6 +151,27 @@ pub struct WorktreeReport {
 pub struct RepositoryFingerprint {
     pub refs: u64,
     pub worktree: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchInfo {
+    pub reference: String,
+    pub commit: String,
+    pub is_current: bool,
+    pub worktree_path: Option<PathBuf>,
+}
+
+impl BranchInfo {
+    pub fn is_local(&self) -> bool {
+        self.reference.starts_with("refs/heads/")
+    }
+
+    pub fn name(&self) -> &str {
+        self.reference
+            .strip_prefix("refs/heads/")
+            .or_else(|| self.reference.strip_prefix("refs/remotes/"))
+            .unwrap_or(&self.reference)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

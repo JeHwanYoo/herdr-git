@@ -39,7 +39,7 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 | Copy | Copy selected code with its file path and line numbers |
 | Commit | Create or amend a commit, or ask an Agent to write it |
 | Remotes | Add, view, or remove remotes; fetch, pull, and choose where to push |
-| Branches & tags | Create branches and tags, or switch branches |
+| Branches & tags | Find and switch branches, create branches and tags, and rename or delete local branches |
 | Rebase | Rebase onto a branch or commit, including interactive rebase |
 | Cherry-pick, revert & reset | Apply a commit, undo it, or reset to it |
 | Stash | Save uncommitted changes and restore them |

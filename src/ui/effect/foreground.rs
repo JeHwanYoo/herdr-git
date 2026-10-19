@@ -94,6 +94,11 @@ pub(in crate::ui) fn run_foreground_job(
             result: Repository::at_root(path.clone()).branch_targets(),
             path,
         },
+        ForegroundRequest::BranchList { id, path } => ForegroundResult::BranchList {
+            id,
+            result: Repository::at_root(path.clone()).branches(),
+            path,
+        },
         ForegroundRequest::ResetContext { id, path } => ForegroundResult::ResetContext {
             id,
             path: path.clone(),

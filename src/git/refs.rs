@@ -166,6 +166,20 @@ impl Repository {
         })
     }
 
+    pub fn branches(&self) -> Result<Vec<BranchInfo>, String> {
+        self.branches_matching(&["refs/heads/", "refs/remotes/"])
+    }
+
+    pub(super) fn branches_matching(&self, patterns: &[&str]) -> Result<Vec<BranchInfo>, String> {
+        let mut args = vec![
+            "for-each-ref",
+            "--sort=refname",
+            "--format=%(refname)%00%(objectname)%00%(HEAD)%00%(symref)%00%(worktreepath)%00",
+        ];
+        args.extend_from_slice(patterns);
+        parse_branches(&git(&self.root, &args)?)
+    }
+
     pub fn branch_targets(&self) -> Result<Vec<ResetTarget>, String> {
         let output = git(
             &self.root,
@@ -251,6 +265,38 @@ impl Repository {
     }
 }
 
+fn parse_branches(mut output: &str) -> Result<Vec<BranchInfo>, String> {
+    let invalid_record = || "Git returned an invalid branch record.".to_owned();
+    let mut branches = Vec::new();
+    while !output.is_empty() {
+        let mut fields = [""; 5];
+        for field in &mut fields {
+            let (value, remaining) = output.split_once('\0').ok_or_else(invalid_record)?;
+            *field = value;
+            output = remaining;
+        }
+        let [reference, commit, head, symref, worktree] = fields;
+        if reference.is_empty() || commit.is_empty() {
+            return Err(invalid_record());
+        }
+        if !output.is_empty() {
+            output = output.strip_prefix('\n').ok_or_else(invalid_record)?;
+        }
+        if !symref.is_empty()
+            || !(reference.starts_with("refs/heads/") || reference.starts_with("refs/remotes/"))
+        {
+            continue;
+        }
+        branches.push(BranchInfo {
+            reference: reference.to_owned(),
+            commit: commit.to_owned(),
+            is_current: head == "*",
+            worktree_path: (!worktree.is_empty()).then(|| PathBuf::from(worktree)),
+        });
+    }
+    Ok(branches)
+}
+
 pub(super) fn is_github_remote(url: &str) -> bool {
     [
         "https://github.com/",
@@ -264,12 +310,192 @@ pub(super) fn is_github_remote(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_github_remote;
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn recognizes_supported_github_remote_forms() {
         assert!(is_github_remote("git@github.com:JeHwanYoo/herdr-git.git"));
         assert!(is_github_remote("https://github.com/JeHwanYoo/herdr-git"));
         assert!(!is_github_remote("https://gitlab.com/a/b"));
+    }
+
+    #[test]
+    fn branch_management_lists_full_refs_and_excludes_only_symbolic_aliases() {
+        let repository = repository("namespaces");
+        let root = repository.root();
+        git(root, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        let commit = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        git(root, &["branch", "topic"]).unwrap();
+        for reference in [
+            "refs/remotes/origin/topic",
+            "refs/remotes/backup/HEAD",
+            "refs/other/topic",
+        ] {
+            git(root, &["update-ref", reference, &commit]).unwrap();
+        }
+        git(
+            root,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/topic",
+            ],
+        )
+        .unwrap();
+        git(root, &["tag", "topic"]).unwrap();
+        let branches = repository.branches().unwrap();
+        assert_eq!(
+            branches
+                .iter()
+                .map(|branch| branch.reference.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "refs/heads/main",
+                "refs/heads/topic",
+                "refs/remotes/backup/HEAD",
+                "refs/remotes/origin/topic",
+            ]
+        );
+        assert_eq!(repository.branches_matching(&["refs/"]).unwrap(), branches);
+        assert!(branches.iter().all(|branch| branch.commit == commit));
+        assert!(branches[0].is_current);
+        assert_eq!(branches[0].worktree_path.as_deref(), Some(root));
+        assert!(branches[0].is_local());
+        assert_eq!(branches[1].name(), "topic");
+        assert!(!branches[2].is_local());
+        assert_eq!(branches[2].name(), "backup/HEAD");
+        assert_eq!(branches[3].name(), "origin/topic");
+        assert!(
+            branches[1..]
+                .iter()
+                .all(|branch| !branch.is_current && branch.worktree_path.is_none())
+        );
+        assert_eq!(
+            repository.branches_matching(&["refs/heads/topic"]).unwrap(),
+            [branches[1].clone()]
+        );
+        git(root, &["checkout", "--detach", &commit]).unwrap();
+        let detached = repository.branches().unwrap();
+        assert_eq!(
+            detached
+                .iter()
+                .map(|branch| (&branch.reference, &branch.commit))
+                .collect::<Vec<_>>(),
+            branches
+                .iter()
+                .map(|branch| (&branch.reference, &branch.commit))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            detached
+                .iter()
+                .all(|branch| !branch.is_current && branch.worktree_path.is_none())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_management_unborn_repository_has_no_branches() {
+        let repository = repository("unborn");
+        assert!(repository.branches().unwrap().is_empty());
+        fs::remove_dir_all(repository.root()).unwrap();
+    }
+
+    #[test]
+    fn branch_management_preserves_linked_worktree_spaces_and_newlines() {
+        let repository = repository("worktree");
+        let root = repository.root();
+        git(root, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        let linked = root.join(" linked \n checkout \n");
+        git(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "a-linked",
+                linked.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let branches = repository.branches().unwrap();
+        let linked_branch = branches
+            .iter()
+            .find(|branch| branch.reference == "refs/heads/a-linked")
+            .unwrap();
+        assert_eq!(linked_branch.worktree_path.as_ref(), Some(&linked));
+        assert!(!linked_branch.is_current);
+        let main = branches
+            .iter()
+            .find(|branch| branch.reference == "refs/heads/main")
+            .unwrap();
+        assert!(main.is_current);
+        assert_eq!(main.worktree_path.as_deref(), Some(root));
+        let linked_repository = Repository::at_root(linked.clone());
+        let linked_branches = linked_repository.branches().unwrap();
+        assert!(
+            linked_branches
+                .iter()
+                .find(|branch| branch.reference == "refs/heads/a-linked")
+                .unwrap()
+                .is_current
+        );
+        assert!(
+            !linked_branches
+                .iter()
+                .find(|branch| branch.reference == "refs/heads/main")
+                .unwrap()
+                .is_current
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_management_rejects_incomplete_or_missing_required_fields() {
+        for output in [
+            "\n",
+            "refs/heads/topic\0",
+            "refs/heads/topic\0abc\0 \0\0",
+            "\0abc\0 \0\0\0\n",
+            "refs/heads/topic\0\0 \0\0\0\n",
+            "refs/heads/topic\0abc\0 \0\0\0\n\n",
+            "refs/heads/topic\0abc\0 \0\0\0trailing",
+        ] {
+            assert_eq!(
+                parse_branches(output),
+                Err("Git returned an invalid branch record.".to_owned()),
+                "{output:?}"
+            );
+        }
+        assert_eq!(parse_branches(""), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn branch_management_parses_nul_records_without_trimming_worktree_paths() {
+        let output = "refs/heads/first\0abc\0*\0\0\n path \n\0\nrefs/heads/second\0def\0 \0\0\0\n";
+        let branches = parse_branches(output).unwrap();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].worktree_path, Some(PathBuf::from("\n path \n")));
+        assert_eq!(branches[1].reference, "refs/heads/second");
+        assert_eq!(branches[1].worktree_path, None);
+        assert_eq!(
+            parse_branches(output.strip_suffix('\n').unwrap()).unwrap(),
+            branches
+        );
+    }
+
+    fn repository(name: &str) -> Repository {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("herdr-branches-{name}-{unique}"));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.name", "Test Author"]).unwrap();
+        git(&root, &["config", "user.email", "test@example.com"]).unwrap();
+        Repository::at_root(root)
     }
 }

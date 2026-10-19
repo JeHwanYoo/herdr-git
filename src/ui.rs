@@ -486,6 +486,9 @@ impl App {
                     command,
                     result,
                 } => self.apply_branch_targets(id, path, command, result),
+                ForegroundResult::BranchList { id, path, result } => {
+                    self.apply_branch_list(id, path, result)
+                }
                 ForegroundResult::ResetContext { id, path, result } => {
                     self.apply_reset_context(id, path, result)
                 }
@@ -606,6 +609,7 @@ impl App {
             matches!(
                 action.kind,
                 crate::ui::lanes::ForegroundKind::BranchTargets { .. }
+                    | crate::ui::lanes::ForegroundKind::BranchList { .. }
             )
         }) || self.explorer.search_pending()
         {
@@ -693,8 +697,8 @@ mod tests {
     use super::overlay::{ContextMenu, CopyShaDialog, Overlay};
     use super::shell::{ActiveTab, PaneFocus};
     use super::test_support::{
-        buffer_text, git, intercept_foreground, offline_app, press, render, temp_registry,
-        temp_repo, wait_for_diff, wait_for_foreground, wait_for_refresh,
+        buffer_text, click, find_text, git, intercept_foreground, offline_app, press, render,
+        temp_registry, temp_repo, wait_for_diff, wait_for_foreground, wait_for_refresh,
     };
     use super::{
         AUTO_FETCH_INTERVAL, AUTO_REFRESH_INTERVAL, ActiveRefresh, App, ForegroundRequest,
@@ -717,7 +721,7 @@ mod tests {
     use crate::ui::lanes::ForegroundKind;
     use crate::ui::syntax::DiffDocument;
     use crate::ui::syntax::SyntaxHighlighter;
-    use crossterm::event::{KeyCode, KeyboardEnhancementFlags};
+    use crossterm::event::{Event, KeyCode, KeyboardEnhancementFlags};
 
     fn fingerprint(value: u64) -> RepositoryFingerprint {
         RepositoryFingerprint {
@@ -1732,6 +1736,8 @@ mod tests {
 
         let repository = Repository::discover(&first).unwrap();
         let mut app = App::load(repository).unwrap();
+        let first_head = app.ops.command_context.head_commit.clone().unwrap();
+        assert_ne!(first_head, second_head);
         assert_eq!(app.inspect.details_cache.len(), 1);
         let snapshot =
             super::load_repository_snapshot(&second, &SyntaxHighlighter::new(), &|| false).unwrap();
@@ -1748,23 +1754,89 @@ mod tests {
         );
         assert!(app.ops.command_context.current_branch.is_none());
         assert!(app.ops.command_context.selected_commit.is_none());
-        app.run_quick_action(CommandId::CreateBranchAtHead);
-        let Overlay::Name(prompt) = &mut app.overlay else {
-            panic!("Branch opens the name prompt from detached HEAD");
-        };
-        assert_eq!(prompt.command, CommandId::CreateBranchAtHead);
-        prompt.input.text = "feature/second".to_owned();
-        app.submit_name();
+        let buffer = render(&mut app, 100, 32);
+        let (x, y) = find_text(&buffer, "Branch").unwrap();
+        click(&mut app, x, y);
         wait_for_foreground(&mut app);
-        assert_eq!(
-            app.overlay.confirm_operation(),
-            Some(&GitOperation::CreateBranch {
-                name: "feature/second".to_owned(),
-                commit: second_head,
-            })
+        assert!(matches!(app.overlay, Overlay::Branches(_)));
+        let buffer = render(&mut app, 100, 32);
+        let (x, y) = find_text(&buffer, "New").unwrap();
+        click(&mut app, x, y);
+        assert!(matches!(app.overlay, Overlay::Name(_)));
+        app.handle(Event::Paste("feature/second".to_owned()))
+            .unwrap();
+        press(&mut app, KeyCode::Enter);
+        wait_for_foreground(&mut app);
+        assert!(matches!(app.overlay, Overlay::Confirm { .. }));
+        press(&mut app, KeyCode::Enter);
+        wait_for_foreground(&mut app);
+        wait_for_refresh(&mut app);
+
+        let branches = Repository::discover(&second).unwrap().branches().unwrap();
+        let created = branches
+            .iter()
+            .find(|branch| branch.reference == "refs/heads/feature/second")
+            .expect("New creates the branch in the active repository");
+        assert_eq!(created.commit, second_head);
+        assert_ne!(created.commit, first_head);
+        assert!(app.ops.command_context.current_branch.is_none());
+        assert!(
+            Repository::discover(&first)
+                .unwrap()
+                .branches()
+                .unwrap()
+                .iter()
+                .all(|branch| branch.reference != "refs/heads/feature/second")
         );
+        drop(app);
 
         fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn branch_management_new_uses_head_instead_of_the_selected_history_commit() {
+        let root = temp_repo("branch-manager-new-head");
+        git(&root, &["commit", "--allow-empty", "-m", "Base"]);
+        git(&root, &["commit", "--allow-empty", "-m", "Head"]);
+        let mut app = App::load(Repository::discover(&root).unwrap()).unwrap();
+        app.set_tab(ActiveTab::History);
+        wait_for_refresh(&mut app);
+        app.select(app.graph.display_offset() + 1);
+        let selected = app.graph.selected_commit().unwrap().sha.clone();
+        let head = app.ops.command_context.head_commit.clone().unwrap();
+        assert_ne!(selected, head);
+        assert_eq!(
+            app.ops.command_context.selected_commit.as_deref(),
+            Some(selected.as_str())
+        );
+
+        let buffer = render(&mut app, 100, 32);
+        let (x, y) = find_text(&buffer, "Branch").unwrap();
+        click(&mut app, x, y);
+        wait_for_foreground(&mut app);
+        assert!(matches!(app.overlay, Overlay::Branches(_)));
+        let buffer = render(&mut app, 100, 32);
+        let (x, y) = find_text(&buffer, "New").unwrap();
+        click(&mut app, x, y);
+        assert!(matches!(app.overlay, Overlay::Name(_)));
+        app.handle(Event::Paste("feature/from-head".to_owned()))
+            .unwrap();
+        press(&mut app, KeyCode::Enter);
+        wait_for_foreground(&mut app);
+        assert!(matches!(app.overlay, Overlay::Confirm { .. }));
+        press(&mut app, KeyCode::Enter);
+        wait_for_foreground(&mut app);
+        wait_for_refresh(&mut app);
+
+        let branches = Repository::discover(&root).unwrap().branches().unwrap();
+        let created = branches
+            .iter()
+            .find(|branch| branch.reference == "refs/heads/feature/from-head")
+            .expect("New creates a branch while an older History commit is selected");
+        assert_eq!(created.commit, head);
+        assert_ne!(created.commit, selected);
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn review_agent() -> HerdrAgent {

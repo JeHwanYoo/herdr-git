@@ -33,6 +33,9 @@ pub(super) enum ForegroundKind {
         command: CommandId,
         path: PathBuf,
     },
+    BranchList {
+        path: PathBuf,
+    },
     ResetContext {
         path: PathBuf,
     },
@@ -72,6 +75,7 @@ impl ForegroundKind {
         match self {
             Self::Operation { command, .. } | Self::ValidateName { command, .. } => Some(*command),
             Self::BranchTargets { command, .. } => Some(*command),
+            Self::BranchList { .. } => Some(CommandId::ManageBranches),
             Self::Rebase { .. } => Some(CommandId::InteractiveRebase),
             Self::ResetContext { .. } => Some(CommandId::ResetCurrentBranch),
             Self::LoadAmendMessage { .. }
