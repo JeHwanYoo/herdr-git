@@ -400,6 +400,51 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn staging_treats_spaces_shell_syntax_and_leading_dashes_as_filenames() {
+        let repository = repository("staging-filenames");
+        let root = repository.root();
+        let paths = ["odd $(name).txt", "--verbose", "a file.txt"];
+        for path in paths {
+            fs::write(root.join(path), "base\n").unwrap();
+        }
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-m", "Base"]).unwrap();
+        for path in paths {
+            fs::write(root.join(path), "edited\n").unwrap();
+        }
+        for (stage, unstage, expected) in [
+            (
+                GitOperation::StagePath(paths[0].into()),
+                GitOperation::UnstagePath(paths[0].into()),
+                vec![paths[0]],
+            ),
+            (
+                GitOperation::StagePaths(vec![paths[1].into(), paths[2].into()]),
+                GitOperation::UnstagePaths(vec![paths[1].into(), paths[2].into()]),
+                vec![paths[1], paths[2]],
+            ),
+        ] {
+            repository.execute(&stage).unwrap();
+            let staged = git(root, &["diff", "--cached", "--name-only", "-z"]).unwrap();
+            let actual = staged
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(actual, expected.into_iter().collect());
+            repository.execute(&unstage).unwrap();
+            assert!(
+                git(root, &["diff", "--cached", "--name-only"])
+                    .unwrap()
+                    .is_empty()
+            );
+            for path in paths {
+                assert_eq!(fs::read_to_string(root.join(path)).unwrap(), "edited\n");
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn repository(name: &str) -> Repository {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

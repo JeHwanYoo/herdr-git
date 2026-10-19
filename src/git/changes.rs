@@ -484,31 +484,13 @@ pub fn worktree_report(path: &Path) -> Result<WorktreeReport, String> {
     )?)
 }
 
-#[cfg(test)]
-pub(super) fn summarize_untracked_bytes(bytes: &[u8]) -> DiffSummary {
-    let binary = bytes.iter().take(8_000).any(|byte| *byte == 0);
-    let additions = if bytes.is_empty() || binary {
-        0
-    } else {
-        bytes.iter().filter(|byte| **byte == b'\n').count() + usize::from(!bytes.ends_with(b"\n"))
-    };
-    DiffSummary {
-        files: 1,
-        additions,
-        deletions: 0,
-    }
-}
-
 fn symlink_addition_diff(path: &str, target: &str) -> String {
     format!(
         "diff --git a/{path} b/{path}\nnew file mode 120000\nindex 0000000..0000000\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{target}\n\\ No newline at end of file\n"
     )
 }
 
-pub(super) fn summarize_untracked_reader(
-    mut reader: impl Read,
-    path: &Path,
-) -> Result<DiffSummary, String> {
+fn summarize_untracked_reader(mut reader: impl Read, path: &Path) -> Result<DiffSummary, String> {
     let mut buffer = [0_u8; 64 * 1024];
     let mut total = 0_usize;
     let mut additions = 0_usize;
@@ -569,5 +551,77 @@ fn section_order(section: ChangeSection) -> u8 {
         ChangeSection::Commit => 0,
         ChangeSection::Staged => 1,
         ChangeSection::Unstaged => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::git::{git_processes_started, with_read_cancellation};
+
+    #[test]
+    fn summarizes_untracked_text_and_binary_without_starting_git() {
+        let before = git_processes_started();
+        for (bytes, additions) in [
+            (b"".as_slice(), 0),
+            (b"first\nsecond".as_slice(), 2),
+            (b"first\nsecond\n".as_slice(), 2),
+            (b"binary\0data".as_slice(), 0),
+        ] {
+            let summary =
+                summarize_untracked_reader(Cursor::new(bytes), Path::new("file.txt")).unwrap();
+            assert_eq!(
+                summary,
+                DiffSummary {
+                    files: 1,
+                    additions,
+                    deletions: 0
+                }
+            );
+        }
+        let mut bytes = vec![b'x'; 65_536];
+        bytes.extend_from_slice(b"\nlast");
+        assert_eq!(
+            summarize_untracked_reader(Cursor::new(bytes), Path::new("large.txt")).unwrap(),
+            DiffSummary {
+                files: 1,
+                additions: 2,
+                deletions: 0
+            }
+        );
+        assert_eq!(git_processes_started(), before);
+    }
+
+    #[test]
+    fn cancellation_stops_untracked_file_scanning_between_chunks() {
+        struct SupersedingReader {
+            generation: Arc<AtomicU64>,
+            returned: bool,
+        }
+
+        impl Read for SupersedingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                assert!(!self.returned, "cancelled scan read another chunk");
+                self.returned = true;
+                buffer[..4].copy_from_slice(b"one\n");
+                self.generation.store(2, Ordering::Release);
+                Ok(4)
+            }
+        }
+
+        let generation = Arc::new(AtomicU64::new(1));
+        let reader = SupersedingReader {
+            generation: Arc::clone(&generation),
+            returned: false,
+        };
+        let result = with_read_cancellation(generation, 1, || {
+            summarize_untracked_reader(reader, Path::new("large.txt"))
+        });
+
+        assert_eq!(result.unwrap_err(), GIT_READ_CANCELLED);
     }
 }

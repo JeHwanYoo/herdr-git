@@ -332,3 +332,66 @@ fn terminate_child(child: &mut std::process::Child) {
     }
     let _ = child.wait();
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    use super::*;
+
+    #[test]
+    fn cancelled_read_does_not_start_the_process() {
+        let marker =
+            std::env::temp_dir().join(format!("herdr-git-cancelled-read-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let result = with_read_cancellation(Arc::new(AtomicU64::new(2)), 1, || {
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                "printf started > \"$1\"",
+                "sh",
+                marker.to_str().unwrap(),
+            ]);
+            cancellable_command_output(command)
+        });
+        assert!(!marker.exists(), "cancelled read started a process");
+        assert_eq!(result.unwrap_err(), GIT_READ_CANCELLED);
+    }
+
+    #[test]
+    fn cancellation_terminates_an_already_running_read_process() {
+        let generation = Arc::new(AtomicU64::new(1));
+        let superseding_generation = Arc::clone(&generation);
+        let marker =
+            std::env::temp_dir().join(format!("herdr-git-running-read-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let marker_for_thread = marker.clone();
+        let started = Instant::now();
+        let result = with_read_cancellation(generation, 1, || {
+            let supersede = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !marker_for_thread.exists() {
+                    assert!(Instant::now() < deadline, "read process did not start");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                superseding_generation.store(2, Ordering::Release);
+            });
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                "printf x > \"$1\"; exec sleep 5",
+                "sh",
+                marker.to_str().unwrap(),
+            ]);
+            let result = cancellable_command_output(command);
+            supersede.join().unwrap();
+            result
+        });
+
+        assert_eq!(result.unwrap_err(), GIT_READ_CANCELLED);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        std::fs::remove_file(marker).unwrap();
+    }
+}

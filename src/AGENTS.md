@@ -67,6 +67,8 @@ Module names below refer to children of `ui`; App is defined in `ui.rs`.
 - A feature may stay in one file. Split out a child module when a group of functions and types can hide implementation details behind an interface used by the parent.
 - Extract shared code for existing callers that need the same behavior; similar-looking code alone does not require an abstraction.
 - Keep unit tests in the module they test; put fixtures shared by UI tests in `src/ui/test_support.rs`.
-- Run `cargo fmt --check` and tests covering the changed behavior. Run the full test suite when changing shared Git behavior, worker coordination, or cross-feature state.
 - Add persistent tests when the risk of recurrence and its impact justify their maintenance cost. Verify other fixes with focused checks during the change.
+- Do not write tautological tests that duplicate the implementation.
+- Do not write structure-sensitive tests that enforce source file structure or element order instead of observable behavior.
+- Do not write tests that cannot fail because mocks or stubs simplify away the behavior under test.
 - Work within the existing boundaries where possible. If a feature requires changing responsibilities or dependencies, update this document in the same change and explain why in your final response. Create additional documentation files only when requested.
