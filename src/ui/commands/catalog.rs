@@ -19,6 +19,7 @@ pub(in crate::ui) enum CommandId {
     Stash,
     StashChanges,
     StashPop,
+    ManageBranches,
     CreateBranchAtHead,
     CreateBranch,
     CreateTag,
@@ -30,7 +31,7 @@ pub(in crate::ui) enum CommandId {
     CopySha,
 }
 
-pub(in crate::ui) const COMMANDS: [CommandId; 19] = [
+pub(in crate::ui) const COMMANDS: [CommandId; 20] = [
     CommandId::Refresh,
     CommandId::SwitchRepository,
     CommandId::AddRemote,
@@ -39,6 +40,7 @@ pub(in crate::ui) const COMMANDS: [CommandId; 19] = [
     CommandId::Pull,
     CommandId::Commit,
     CommandId::Push,
+    CommandId::ManageBranches,
     CommandId::CreateBranchAtHead,
     CommandId::CheckoutCommit,
     CommandId::RebaseHere,
@@ -57,7 +59,7 @@ pub(in crate::ui) const QUICK_ACTIONS: [CommandId; 6] = [
     CommandId::Pull,
     CommandId::Commit,
     CommandId::Push,
-    CommandId::CreateBranchAtHead,
+    CommandId::ManageBranches,
     CommandId::StashChanges,
 ];
 
@@ -147,6 +149,9 @@ impl GitOperation {
             Self::StashChanges => Some(CommandId::StashChanges),
             Self::StashPop => Some(CommandId::StashPop),
             Self::CreateBranch { .. } => Some(CommandId::CreateBranch),
+            Self::RenameBranch { .. } | Self::DeleteBranch { .. } => {
+                Some(CommandId::ManageBranches)
+            }
             Self::CreateTag { .. } => Some(CommandId::CreateTag),
             Self::CheckoutCommit(_) | Self::CheckoutBranch(_) => Some(CommandId::CheckoutCommit),
             Self::RebaseHere(_) => Some(CommandId::RebaseHere),
@@ -189,7 +194,8 @@ impl CommandId {
             Self::Stash => "Stash…",
             Self::StashChanges => "Stash changes",
             Self::StashPop => "Pop stash",
-            Self::CreateBranchAtHead => "Branch…",
+            Self::ManageBranches => "Branches…",
+            Self::CreateBranchAtHead => "Branch at HEAD…",
             Self::CreateBranch => "Branch at commit…",
             Self::CreateTag => "Tag…",
             Self::CheckoutCommit => "Checkout…",
@@ -244,10 +250,12 @@ impl CommandId {
                 enabled: true,
                 reason: None,
             },
-            Self::AddRemote | Self::ShowRemotes | Self::RemoveRemote => Availability {
-                enabled: true,
-                reason: None,
-            },
+            Self::ManageBranches | Self::AddRemote | Self::ShowRemotes | Self::RemoveRemote => {
+                Availability {
+                    enabled: true,
+                    reason: None,
+                }
+            }
             Self::Fetch if !context.has_remote => disabled("no remotes configured"),
             Self::Fetch => Availability {
                 enabled: true,
@@ -306,6 +314,7 @@ impl CommandId {
             Self::Push => "Push",
             Self::Stash | Self::StashChanges => "Stash",
             Self::StashPop => "Stash pop",
+            Self::ManageBranches => "Branches",
             Self::CreateBranch | Self::CreateBranchAtHead => "Branch",
             Self::CreateTag => "Tag",
             Self::CheckoutCommit => "Checkout",
@@ -331,6 +340,7 @@ impl CommandId {
             Self::Commit => "Committing",
             Self::Push => "Pushing",
             Self::StashChanges => "Stashing",
+            Self::ManageBranches => "Managing branches",
             Self::CreateBranchAtHead => "Creating",
             Self::ResetCurrentBranch => "Resetting",
             _ => "Running",
@@ -343,7 +353,7 @@ impl CommandId {
             Self::Pull => "Pull",
             Self::Commit => "Commit",
             Self::Push => "Push",
-            Self::CreateBranchAtHead => "Branch",
+            Self::ManageBranches => "Branch",
             Self::Stash | Self::StashChanges => "Stash",
             _ => unreachable!("command is not a quick action"),
         }
@@ -355,7 +365,7 @@ impl CommandId {
             Self::Pull => 'l',
             Self::Commit => 'c',
             Self::Push => 'u',
-            Self::CreateBranchAtHead => 'b',
+            Self::ManageBranches => 'b',
             Self::StashChanges => 's',
             _ => unreachable!("command is not a quick action"),
         }
@@ -371,6 +381,7 @@ impl CommandId {
                 | Self::Fetch
                 | Self::Commit
                 | Self::Stash
+                | Self::ManageBranches
         )
     }
 
@@ -415,6 +426,7 @@ impl CommandId {
             Self::InteractiveRebase => commit().map(GitOperation::InteractiveRebase),
             Self::CherryPick => commit().map(GitOperation::CherryPick),
             Self::Revert => commit().map(GitOperation::Revert),
+            Self::ManageBranches => Err("branch management dialog is required"),
             Self::CreateBranch | Self::CreateBranchAtHead | Self::CreateTag => {
                 Err("name input is required")
             }

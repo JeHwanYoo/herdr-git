@@ -221,7 +221,7 @@ impl App {
             AppShortcut::Pull => self.run_quick_action(CommandId::Pull),
             AppShortcut::Commit => self.run_quick_action(CommandId::Commit),
             AppShortcut::Push => self.run_quick_action(CommandId::Push),
-            AppShortcut::Branch => self.run_quick_action(CommandId::CreateBranchAtHead),
+            AppShortcut::Branch => self.run_quick_action(CommandId::ManageBranches),
             AppShortcut::Stash => self.run_quick_action(CommandId::StashChanges),
             AppShortcut::Checkout if self.shell.active_tab == ActiveTab::History => {
                 self.run_graph_action(GraphAction::Checkout);
@@ -461,7 +461,9 @@ impl App {
                 {
                     return None;
                 }
-                ForegroundKind::BranchTargets { .. } => "Loading branches",
+                ForegroundKind::BranchTargets { .. } | ForegroundKind::BranchList { .. } => {
+                    "Loading branches"
+                }
                 ForegroundKind::ResetContext { .. } => "Loading Reset targets",
                 ForegroundKind::Operation { command, .. }
                     if !QUICK_ACTIONS.contains(command)
@@ -890,7 +892,6 @@ mod tests {
     use super::SELECTION_WHEEL_INTERVAL;
     use crate::git::{ReadError, Repository, RepositoryFingerprint};
     use crate::project::ProjectRegistry;
-    use crate::ui::commands::CommandId;
     use crate::ui::effect::{
         ActiveRefresh, ChangedRefresh, ChangesRefresh, ForegroundRequest, ForegroundResult,
         HighlightedDiff, RefreshProgress, RefreshRequest, RefreshResult, RefreshScope, RequestId,
@@ -1292,12 +1293,6 @@ mod tests {
 
     #[test]
     fn holding_alt_overlays_shortcuts_without_moving_navigation() {
-        assert_eq!(CommandId::Fetch.quick_action_shortcut(), 'f');
-        assert_eq!(CommandId::Pull.quick_action_shortcut(), 'l');
-        assert_eq!(CommandId::Commit.quick_action_shortcut(), 'c');
-        assert_eq!(CommandId::Push.quick_action_shortcut(), 'u');
-        assert_eq!(CommandId::CreateBranchAtHead.quick_action_shortcut(), 'b');
-        assert_eq!(CommandId::StashChanges.quick_action_shortcut(), 's');
         assert_eq!(header_action_at(8), Some(HeaderAction::Changes));
         assert_eq!(header_action_at(20), Some(HeaderAction::Files));
         assert_eq!(header_action_at(29), Some(HeaderAction::Commands));

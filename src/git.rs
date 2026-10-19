@@ -13,9 +13,9 @@ mod rebase;
 mod refs;
 pub use history::{HISTORY_PAGE_SIZE, HistoryPage, HistorySession};
 pub use model::{
-    BlameInfo, BranchStatus, ChangeOverview, ChangeSection, ChangedPath, ChangesComparison, Commit,
-    CommitDetails, CommitRef, CommitRefKind, DiffSummary, DiffTarget, LineChange,
-    LineHistoryCommit, LocalIdentity, RepositoryFingerprint, ResetContext, ResetTarget,
+    BlameInfo, BranchInfo, BranchStatus, ChangeOverview, ChangeSection, ChangedPath,
+    ChangesComparison, Commit, CommitDetails, CommitRef, CommitRefKind, DiffSummary, DiffTarget,
+    LineChange, LineHistoryCommit, LocalIdentity, RepositoryFingerprint, ResetContext, ResetTarget,
     WorkingChange, WorktreeReport,
 };
 pub use operation::{GitOperation, ResetMode};

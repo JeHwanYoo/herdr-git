@@ -366,6 +366,10 @@ pub(super) enum ForegroundRequest {
         id: RequestId,
         path: PathBuf,
     },
+    BranchList {
+        id: RequestId,
+        path: PathBuf,
+    },
     ResetContext {
         id: RequestId,
         path: PathBuf,
@@ -480,7 +484,8 @@ impl ForegroundRequest {
             | Self::FilePreview { .. }
             | Self::Switch { .. }
             | Self::ComparisonTargets { .. }
-            | Self::BranchTargets { .. } => Lane::Read,
+            | Self::BranchTargets { .. }
+            | Self::BranchList { .. } => Lane::Read,
             Self::RebaseRun { .. }
             | Self::Operation { .. }
             | Self::ResetContext { .. }
@@ -525,6 +530,11 @@ pub(super) enum ForegroundResult {
         id: RequestId,
         path: PathBuf,
         result: Result<Vec<crate::git::ResetTarget>, String>,
+    },
+    BranchList {
+        id: RequestId,
+        path: PathBuf,
+        result: Result<Vec<crate::git::BranchInfo>, String>,
     },
     ResetContext {
         id: RequestId,

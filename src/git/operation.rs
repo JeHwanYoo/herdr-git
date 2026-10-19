@@ -51,6 +51,15 @@ pub enum GitOperation {
         name: String,
         commit: String,
     },
+    RenameBranch {
+        reference: String,
+        new_name: String,
+        expected_commit: String,
+    },
+    DeleteBranch {
+        reference: String,
+        expected_commit: String,
+    },
     CreateTag {
         name: String,
         commit: String,
@@ -150,6 +159,29 @@ impl GitOperation {
             Self::CreateBranch { name, commit } => {
                 vec!["branch".into(), "--".into(), name.clone(), commit.clone()]
             }
+            Self::RenameBranch {
+                reference,
+                new_name,
+                ..
+            } => vec![
+                "branch".into(),
+                "-m".into(),
+                "--".into(),
+                reference
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(reference)
+                    .into(),
+                new_name.clone(),
+            ],
+            Self::DeleteBranch { reference, .. } => vec![
+                "branch".into(),
+                "-d".into(),
+                "--".into(),
+                reference
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(reference)
+                    .into(),
+            ],
             Self::CreateTag { name, commit } => {
                 vec!["tag".into(), "--".into(), name.clone(), commit.clone()]
             }
@@ -232,6 +264,46 @@ impl Repository {
                     "Reset stopped because the current branch or HEAD changed. Refresh and try again."
                         .to_owned(),
                 );
+            }
+        }
+        if let GitOperation::RenameBranch {
+            reference,
+            expected_commit,
+            ..
+        }
+        | GitOperation::DeleteBranch {
+            reference,
+            expected_commit,
+        } = operation
+        {
+            if !reference.starts_with("refs/heads/") {
+                return Err("Only local branches can be changed.".into());
+            }
+            let branch = self
+                .branches_matching(&[reference])?
+                .into_iter()
+                .find(|branch| branch.reference == *reference)
+                .filter(|branch| branch.commit == *expected_commit)
+                .ok_or("Branch changed or no longer exists. Refresh and try again.")?;
+            match operation {
+                GitOperation::RenameBranch { new_name, .. } => {
+                    if !branch.is_current && branch.worktree_path.is_some() {
+                        return Err(
+                            "Cannot rename a branch checked out in another worktree.".into()
+                        );
+                    }
+                    if new_name == branch.name() {
+                        return Err("Enter a different branch name.".into());
+                    }
+                    let destination = format!("refs/heads/{new_name}");
+                    git(&self.root, &["check-ref-format", &destination])?;
+                }
+                GitOperation::DeleteBranch { .. } => {
+                    if branch.is_current || branch.worktree_path.is_some() {
+                        return Err("Cannot delete a branch checked out in a worktree.".into());
+                    }
+                }
+                _ => unreachable!(),
             }
         }
         if let GitOperation::DiscardUnstagedPaths(paths) = operation
@@ -399,6 +471,319 @@ impl Repository {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn branch_management_renames_current_and_other_branches_with_upstream() {
+        let repository = repository("branch-renames");
+        let root = repository.root();
+        fs::write(root.join("tracked.txt"), "base\n").unwrap();
+        git(root, &["add", "tracked.txt"]).unwrap();
+        git(root, &["commit", "-m", "Base"]).unwrap();
+        git(root, &["branch", "topic"]).unwrap();
+        let commit = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        fs::write(root.join("tracked.txt"), "dirty\n").unwrap();
+        for (old, new) in [("main", "main-renamed"), ("topic", "topic-renamed")] {
+            git(root, &["config", &format!("branch.{old}.remote"), "origin"]).unwrap();
+            git(
+                root,
+                &[
+                    "config",
+                    &format!("branch.{old}.merge"),
+                    &format!("refs/heads/{old}"),
+                ],
+            )
+            .unwrap();
+            repository
+                .execute(&GitOperation::RenameBranch {
+                    reference: format!("refs/heads/{old}"),
+                    new_name: new.into(),
+                    expected_commit: commit.clone(),
+                })
+                .unwrap();
+            assert!(
+                git(
+                    root,
+                    &["show-ref", "--verify", &format!("refs/heads/{old}")]
+                )
+                .is_err()
+            );
+            assert_eq!(
+                git(root, &["rev-parse", &format!("refs/heads/{new}")])
+                    .unwrap()
+                    .trim(),
+                commit
+            );
+            assert_eq!(
+                git(root, &["config", "--get", &format!("branch.{new}.remote")])
+                    .unwrap()
+                    .trim(),
+                "origin"
+            );
+            assert_eq!(
+                git(root, &["config", "--get", &format!("branch.{new}.merge")])
+                    .unwrap()
+                    .trim(),
+                format!("refs/heads/{old}")
+            );
+            assert!(
+                git(
+                    root,
+                    &["config", "--get-regexp", &format!("^branch\\.{old}\\.")]
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            git(root, &["symbolic-ref", "HEAD"]).unwrap().trim(),
+            "refs/heads/main-renamed"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "dirty\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_management_rejects_invalid_names_and_collisions_without_changes() {
+        let repository = repository("branch-invalid-names");
+        let root = repository.root();
+        git(root, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        git(root, &["branch", "topic"]).unwrap();
+        git(root, &["commit", "--allow-empty", "-m", "Next"]).unwrap();
+        git(root, &["branch", "occupied"]).unwrap();
+        git(root, &["switch", "topic"]).unwrap();
+        git(root, &["switch", "main"]).unwrap();
+        git(root, &["config", "branch.topic.remote", "origin"]).unwrap();
+        git(
+            root,
+            &["config", "branch.topic.merge", "refs/heads/upstream"],
+        )
+        .unwrap();
+        git(root, &["config", "branch.occupied.remote", "backup"]).unwrap();
+        git(
+            root,
+            &["config", "branch.occupied.merge", "refs/heads/other"],
+        )
+        .unwrap();
+        let commit = git(root, &["rev-parse", "topic"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let refs = git(root, &["show-ref"]).unwrap();
+        let config = git(root, &["config", "--local", "--list"]).unwrap();
+        for new_name in [
+            "occupied",
+            "",
+            "topic",
+            " topic",
+            "topic ",
+            "bad..name",
+            "bad\nname",
+            "@{-1}",
+        ] {
+            let error = repository
+                .execute(&GitOperation::RenameBranch {
+                    reference: "refs/heads/topic".into(),
+                    new_name: new_name.into(),
+                    expected_commit: commit.clone(),
+                })
+                .unwrap_err();
+            if new_name == "topic" {
+                assert_eq!(error, "Enter a different branch name.");
+            }
+            assert_eq!(git(root, &["show-ref"]).unwrap(), refs, "{new_name:?}");
+            assert_eq!(
+                git(root, &["config", "--local", "--list"]).unwrap(),
+                config,
+                "{new_name:?}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_management_rejects_remote_and_nonlocal_references() {
+        let repository = repository("branch-nonlocal");
+        let root = repository.root();
+        git(root, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        git(root, &["branch", "topic"]).unwrap();
+        git(root, &["update-ref", "refs/remotes/origin/topic", "HEAD"]).unwrap();
+        git(root, &["tag", "topic-tag"]).unwrap();
+        git(root, &["config", "branch.topic.remote", "origin"]).unwrap();
+        git(root, &["config", "branch.topic.merge", "refs/heads/topic"]).unwrap();
+        let commit = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        let refs = git(root, &["show-ref"]).unwrap();
+        let config = git(root, &["config", "--local", "--list"]).unwrap();
+        for reference in ["refs/remotes/origin/topic", "refs/tags/topic-tag", "topic"] {
+            for operation in [
+                GitOperation::RenameBranch {
+                    reference: reference.into(),
+                    new_name: "renamed".into(),
+                    expected_commit: commit.clone(),
+                },
+                GitOperation::DeleteBranch {
+                    reference: reference.into(),
+                    expected_commit: commit.clone(),
+                },
+            ] {
+                assert_eq!(
+                    repository.execute(&operation).unwrap_err(),
+                    "Only local branches can be changed."
+                );
+                assert_eq!(git(root, &["show-ref"]).unwrap(), refs);
+                assert_eq!(git(root, &["config", "--local", "--list"]).unwrap(), config);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_management_deletes_merged_but_preserves_unmerged_and_current_branches() {
+        let repository = repository("branch-deletes");
+        let root = repository.root();
+        git(root, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        git(root, &["branch", "merged"]).unwrap();
+        let base = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        git(root, &["switch", "-c", "unmerged"]).unwrap();
+        git(root, &["commit", "--allow-empty", "-m", "Topic"]).unwrap();
+        let unmerged = git(root, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        git(root, &["switch", "main"]).unwrap();
+        fs::write(root.join("untracked.txt"), "keep\n").unwrap();
+        repository
+            .execute(&GitOperation::DeleteBranch {
+                reference: "refs/heads/merged".into(),
+                expected_commit: base.clone(),
+            })
+            .unwrap();
+        assert!(git(root, &["show-ref", "--verify", "refs/heads/merged"]).is_err());
+        assert!(
+            repository
+                .execute(&GitOperation::DeleteBranch {
+                    reference: "refs/heads/unmerged".into(),
+                    expected_commit: unmerged.clone(),
+                })
+                .is_err()
+        );
+        assert_eq!(
+            git(root, &["rev-parse", "refs/heads/unmerged"])
+                .unwrap()
+                .trim(),
+            unmerged
+        );
+        assert_eq!(
+            repository
+                .execute(&GitOperation::DeleteBranch {
+                    reference: "refs/heads/main".into(),
+                    expected_commit: base.clone(),
+                })
+                .unwrap_err(),
+            "Cannot delete a branch checked out in a worktree."
+        );
+        assert_eq!(git(root, &["rev-parse", "HEAD"]).unwrap().trim(), base);
+        assert_eq!(
+            fs::read_to_string(root.join("untracked.txt")).unwrap(),
+            "keep\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_management_preserves_branches_checked_out_in_linked_worktrees() {
+        let repository = repository("branch-linked");
+        let root = repository.root();
+        git(root, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        let linked = root.join("linked worktree\nbranch");
+        git(
+            root,
+            &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+        )
+        .unwrap();
+        git(root, &["config", "branch.linked.remote", "origin"]).unwrap();
+        git(
+            root,
+            &["config", "branch.linked.merge", "refs/heads/linked"],
+        )
+        .unwrap();
+        let commit = git(root, &["rev-parse", "refs/heads/linked"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let refs = git(root, &["show-ref"]).unwrap();
+        let config = git(root, &["config", "--local", "--list"]).unwrap();
+        for (operation, error) in [
+            (
+                GitOperation::RenameBranch {
+                    reference: "refs/heads/linked".into(),
+                    new_name: "renamed".into(),
+                    expected_commit: commit.clone(),
+                },
+                "Cannot rename a branch checked out in another worktree.",
+            ),
+            (
+                GitOperation::DeleteBranch {
+                    reference: "refs/heads/linked".into(),
+                    expected_commit: commit.clone(),
+                },
+                "Cannot delete a branch checked out in a worktree.",
+            ),
+        ] {
+            assert_eq!(repository.execute(&operation).unwrap_err(), error);
+            assert_eq!(git(root, &["show-ref"]).unwrap(), refs);
+            assert_eq!(git(root, &["config", "--local", "--list"]).unwrap(), config);
+            assert_eq!(
+                git(&linked, &["symbolic-ref", "HEAD"]).unwrap().trim(),
+                "refs/heads/linked"
+            );
+        }
+        git(root, &["worktree", "remove", linked.to_str().unwrap()]).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_management_rejects_moved_deleted_and_prefix_only_targets() {
+        let repository = repository("branch-stale");
+        let root = repository.root();
+        git(root, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        git(root, &["branch", "topic"]).unwrap();
+        git(root, &["branch", "unrelated"]).unwrap();
+        git(root, &["config", "branch.topic.remote", "origin"]).unwrap();
+        git(root, &["config", "branch.topic.merge", "refs/heads/topic"]).unwrap();
+        let commit = git(root, &["rev-parse", "topic"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        git(root, &["commit", "--allow-empty", "-m", "Next"]).unwrap();
+        git(root, &["update-ref", "refs/heads/topic", "HEAD"]).unwrap();
+        for state in 0..3 {
+            if state == 1 {
+                git(root, &["update-ref", "-d", "refs/heads/topic"]).unwrap();
+            } else if state == 2 {
+                git(root, &["branch", "topic/nested", &commit]).unwrap();
+            }
+            let refs = git(root, &["show-ref"]).unwrap();
+            let config = git(root, &["config", "--local", "--list"]).unwrap();
+            for operation in [
+                GitOperation::RenameBranch {
+                    reference: "refs/heads/topic".into(),
+                    new_name: "renamed".into(),
+                    expected_commit: commit.clone(),
+                },
+                GitOperation::DeleteBranch {
+                    reference: "refs/heads/topic".into(),
+                    expected_commit: commit.clone(),
+                },
+            ] {
+                assert_eq!(
+                    repository.execute(&operation).unwrap_err(),
+                    "Branch changed or no longer exists. Refresh and try again."
+                );
+                assert_eq!(git(root, &["show-ref"]).unwrap(), refs);
+                assert_eq!(git(root, &["config", "--local", "--list"]).unwrap(), config);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn staging_treats_spaces_shell_syntax_and_leading_dashes_as_filenames() {

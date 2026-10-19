@@ -8,8 +8,8 @@ use crate::git::GitOperation;
 
 use super::App;
 use super::commands::{
-    ActionDialog, CommandId, CommandPalette, CommitDialog, NamePrompt, OperationResultView,
-    ResetFlow, TargetPicker,
+    ActionDialog, BranchManager, CommandId, CommandPalette, CommitDialog, NamePrompt,
+    OperationResultView, ResetFlow, TargetPicker,
 };
 pub(super) use super::diff::LineJump;
 pub(super) use super::files::FilesSearch;
@@ -32,6 +32,7 @@ pub(super) enum Overlay {
     Commit(CommitDialog),
     Reset(ResetFlow),
     Target(TargetPicker),
+    Branches(BranchManager),
     LineJump(LineJump),
     FilesSearch(FilesSearch),
     Action(ActionDialog),
@@ -63,6 +64,9 @@ impl Overlay {
         match self {
             Self::None => false,
             Self::Result(_, _) => intent == super::effect::RefreshIntent::Polling,
+            Self::Branches(manager) => {
+                !manager.is_list() || intent != super::effect::RefreshIntent::Operation
+            }
             _ => true,
         }
     }
@@ -86,6 +90,7 @@ impl Overlay {
             Self::Comparison(_)
             | Self::Rebase(_)
             | Self::Target(_)
+            | Self::Branches(_)
             | Self::Commit(_)
             | Self::Reset(_)
             | Self::LineJump(_)
@@ -197,6 +202,7 @@ impl App {
             Overlay::Rebase(_) => self.handle_rebase_editor(input),
             Overlay::Reset(_) => self.handle_reset_flow(input),
             Overlay::Target(_) => self.handle_target_picker(input),
+            Overlay::Branches(_) => self.handle_branch_manager(input),
             Overlay::LineJump(_) => self.handle_line_jump(input),
             Overlay::FilesSearch(_) => self.handle_files_search(input),
             Overlay::Action(_) => self.handle_action_dialog(input),
@@ -243,6 +249,10 @@ impl App {
             Overlay::Target(mut picker) => {
                 self.draw_target_picker(frame, &mut picker);
                 Overlay::Target(picker)
+            }
+            Overlay::Branches(mut manager) => {
+                self.draw_branch_manager(frame, &mut manager);
+                Overlay::Branches(manager)
             }
             Overlay::Rebase(mut editor) => {
                 self.draw_rebase_editor(frame, &mut editor);

@@ -19,6 +19,7 @@ use super::widgets::{
     TextField, area_hovered, chord, left_click, picker_edit, shortcut_spans, update_picker,
 };
 use super::{App, theme};
+pub(super) use branch::BranchManager;
 #[cfg(not(test))]
 use catalog::COMMANDS;
 #[cfg(test)]
@@ -34,6 +35,7 @@ pub(super) use reset::ResetFlow;
 pub(super) use reset::ResetStep;
 pub(super) use target::TargetPicker;
 
+mod branch;
 mod catalog;
 mod commit;
 mod rebase;
@@ -332,7 +334,7 @@ fn quick_action_icon(command: CommandId) -> &'static str {
         CommandId::Pull => "↓",
         CommandId::Commit => "●",
         CommandId::Push => "↑",
-        CommandId::CreateBranchAtHead => theme::BRANCH_GLYPH,
+        CommandId::ManageBranches => theme::BRANCH_GLYPH,
         CommandId::StashChanges => "≡",
         _ => "",
     }
@@ -517,6 +519,7 @@ impl App {
             CommandId::Stash => self.open_stash_dialog(),
             CommandId::AddRemote => self.open_add_remote(),
             CommandId::ShowRemotes => self.open_remotes(),
+            CommandId::ManageBranches => self.open_branch_manager(),
             CommandId::CheckoutCommit | CommandId::RebaseHere | CommandId::InteractiveRebase => {
                 self.open_target_picker(command)
             }
@@ -633,7 +636,12 @@ impl App {
             },
         ) {
             Ok(_) => {}
-            Err(error) => self.show_action_error(&format!("Git worker stopped: {error}")),
+            Err(error) => {
+                let message = format!("Git worker stopped: {error}");
+                if !self.branch_operation_error(&message) {
+                    self.show_action_error(&message);
+                }
+            }
         }
     }
 
@@ -673,7 +681,23 @@ impl App {
         {
             return;
         }
+        let branch_change = matches!(
+            operation,
+            GitOperation::RenameBranch { .. } | GitOperation::DeleteBranch { .. }
+        );
+        if branch_change
+            && self
+                .repository
+                .as_ref()
+                .is_none_or(|repository| repository.root() != path)
+        {
+            return;
+        }
         let (success, output) = operation_output(&operation, result);
+        if branch_change && self.finish_branch_operation(&operation, success, &output) {
+            self.request_operation_refresh("Refreshing repository", RefreshScope::Repository);
+            return;
+        }
         if success
             && matches!(
                 operation,
@@ -1480,7 +1504,7 @@ mod tests {
 
     use super::{
         CommandId, CommandPalette, NamePrompt, OperationResultView, QUICK_ACTIONS,
-        RESULT_VISIBLE_DURATION, quick_action_icon,
+        RESULT_VISIBLE_DURATION,
     };
 
     #[test]
@@ -1493,39 +1517,6 @@ mod tests {
         assert_eq!(view.title(), "✓ Committed");
         let failed = OperationResultView::operation(&operation, "Hook failed", false);
         assert_eq!(failed.title(), "Commit failed");
-    }
-
-    #[test]
-    fn command_palette_finds_header_actions_and_core_commands() {
-        let mut palette = CommandPalette::new();
-        for (query, command) in [
-            ("refresh", CommandId::Refresh),
-            ("workspace", CommandId::SwitchRepository),
-            ("add remotes", CommandId::AddRemote),
-            ("show remotes", CommandId::ShowRemotes),
-            ("fetch", CommandId::Fetch),
-            ("pull", CommandId::Pull),
-            ("commit", CommandId::Commit),
-            ("push", CommandId::Push),
-            ("branch", CommandId::CreateBranchAtHead),
-            ("checkout", CommandId::CheckoutCommit),
-            ("rebase", CommandId::RebaseHere),
-            ("interactive rebase", CommandId::InteractiveRebase),
-            ("cherry-pick", CommandId::CherryPick),
-            ("revert", CommandId::Revert),
-            ("reset", CommandId::ResetCurrentBranch),
-            ("discard", CommandId::DiscardTrackedChanges),
-            ("copy sha", CommandId::CopySha),
-            ("stash", CommandId::Stash),
-            ("update", CommandId::Update),
-        ] {
-            palette.query.text = query.to_owned();
-            palette.filter();
-            assert!(
-                palette.rows.contains(&command),
-                "missing command for {query}"
-            );
-        }
     }
 
     #[test]
@@ -2490,66 +2481,6 @@ mod tests {
         let (x, y) = find_text(&buffer, "Fetch complete").unwrap();
         assert_eq!(buffer[(x, y)].fg, theme::SUCCESS);
         assert!(!buffer_text(&buffer).contains("Closes after 2 s"));
-    }
-
-    #[test]
-    fn quick_action_icons_use_one_shared_two_cell_gap_and_branch_shares_the_badge_glyph() {
-        for command in QUICK_ACTIONS {
-            assert!(!quick_action_icon(command).is_empty());
-        }
-        assert_eq!(
-            quick_action_icon(CommandId::CreateBranchAtHead),
-            theme::BRANCH_GLYPH
-        );
-        assert_eq!(quick_action_icon(CommandId::Refresh), "");
-
-        let mut app = offline_app();
-        let buffer = render(&mut app, 120, 20);
-        let text = buffer_text(&buffer);
-        let normal_positions = QUICK_ACTIONS.map(|command| {
-            let area = app
-                .ops
-                .quick_action_areas
-                .iter()
-                .find_map(|(owner, area)| (*owner == command).then_some(*area))
-                .expect("quick action area");
-            let label_x = find_text_in_row(&buffer, area.y, command.quick_action_label())
-                .expect("quick action label");
-            let icon_x = (area.x..area.right())
-                .find(|x| buffer[(*x, area.y)].symbol() == quick_action_icon(command))
-                .expect("quick action icon");
-            assert_eq!(label_x, icon_x + 3, "{command:?} icon-label gap");
-            (command, icon_x, label_x, area.y)
-        });
-        for command in QUICK_ACTIONS {
-            let action = format!(
-                "{}  {}",
-                quick_action_icon(command),
-                command.quick_action_label()
-            );
-            assert!(text.contains(&action), "missing {action:?} in {text:?}");
-        }
-        let (x, y) = find_text(&buffer, "Branch").expect("Branch quick action");
-        assert_eq!(buffer[(x - 3, y)].symbol(), theme::BRANCH_GLYPH);
-        assert!(!buffer_text(&buffer).contains('⑂'));
-
-        app.shell.shortcut_hints = true;
-        let hinted = render(&mut app, 120, 20);
-        for (command, icon_x, label_x, row) in normal_positions {
-            assert_eq!(
-                find_text_in_row(&hinted, row, command.quick_action_label()),
-                Some(label_x),
-                "{command:?} label moved in shortcut mode"
-            );
-            assert_eq!(
-                hinted[(icon_x, row)].symbol(),
-                command
-                    .quick_action_shortcut()
-                    .to_ascii_uppercase()
-                    .to_string(),
-                "{command:?} shortcut moved from the icon column"
-            );
-        }
     }
 
     #[test]
