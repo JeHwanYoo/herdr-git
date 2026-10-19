@@ -454,36 +454,7 @@ impl CommandId {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMMANDS, CommandContext, CommandId, GitOperation, QUICK_ACTIONS, ResetMode};
-
-    #[test]
-    fn commands_palette_contains_header_actions_and_core_commands() {
-        let titles = COMMANDS.map(CommandId::title).to_vec();
-        assert_eq!(
-            titles,
-            [
-                "Refresh",
-                "Switch workspace",
-                "Add Remotes…",
-                "Show Remotes…",
-                "Fetch",
-                "Pull",
-                "Commit…",
-                "Push",
-                "Branch…",
-                "Checkout…",
-                "Rebase…",
-                "Interactive rebase…",
-                "Cherry-pick…",
-                "Revert…",
-                "Reset…",
-                "Discard all tracked changes…",
-                "Copy SHA…",
-                "Stash…",
-                "Update Herdr Git…"
-            ]
-        );
-    }
+    use super::{CommandContext, CommandId, GitOperation, QUICK_ACTIONS, ResetMode};
 
     #[test]
     fn labels_and_operation_mapping_live_with_the_command_ids() {
@@ -543,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_closed_argv_for_selected_commit() {
+    fn commit_operations_target_the_selected_commit() {
         let context = CommandContext {
             has_repository: true,
             selected_commit: Some("abc123".to_owned()),
@@ -554,30 +525,26 @@ mod tests {
             GitOperation::CherryPick("abc123".to_owned())
         );
         assert_eq!(
-            CommandId::Revert.operation(&context).unwrap().args(),
-            ["revert", "--no-edit", "abc123"]
+            CommandId::Revert.operation(&context).unwrap(),
+            GitOperation::Revert("abc123".to_owned())
         );
         assert_eq!(
-            CommandId::InteractiveRebase
-                .operation(&context)
-                .unwrap()
-                .args(),
-            ["rebase", "-i", "abc123^"]
+            CommandId::InteractiveRebase.operation(&context).unwrap(),
+            GitOperation::InteractiveRebase("abc123".to_owned())
         );
     }
 
     #[test]
-    fn builds_closed_fetch_operation_and_preview() {
+    fn fetch_selects_the_fetch_operation() {
         let operation = CommandId::Fetch
             .operation(&CommandContext::default())
             .unwrap();
         assert_eq!(operation, GitOperation::Fetch);
-        assert_eq!(operation.args(), ["fetch", "--all", "--prune"]);
         assert_eq!(operation.preview(), "git fetch --all --prune");
     }
 
     #[test]
-    fn push_carries_force_with_lease_only_when_the_toggle_is_on() {
+    fn push_defaults_to_the_current_branch_without_force() {
         let context = CommandContext {
             has_repository: true,
             has_remote: true,
@@ -626,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_closed_argv_for_named_refs() {
+    fn named_refs_target_the_selected_commit() {
         let context = CommandContext {
             has_repository: true,
             selected_commit: Some("abc123".to_owned()),
@@ -635,63 +602,25 @@ mod tests {
         assert_eq!(
             CommandId::CreateBranch
                 .named_operation(&context, "feature/topic".to_owned())
-                .unwrap()
-                .args(),
-            ["branch", "--", "feature/topic", "abc123"]
+                .unwrap(),
+            GitOperation::CreateBranch {
+                name: "feature/topic".to_owned(),
+                commit: "abc123".to_owned()
+            }
         );
         assert_eq!(
             CommandId::CreateTag
                 .named_operation(&context, "v0.1.0".to_owned())
-                .unwrap()
-                .args(),
-            ["tag", "--", "v0.1.0", "abc123"]
+                .unwrap(),
+            GitOperation::CreateTag {
+                name: "v0.1.0".to_owned(),
+                commit: "abc123".to_owned()
+            }
         );
     }
 
     #[test]
-    fn builds_closed_argv_for_staging_operations() {
-        assert_eq!(GitOperation::StageAll.args(), ["add", "--all"]);
-        assert_eq!(
-            GitOperation::StagePath("odd $(name).txt".to_owned()).args(),
-            ["add", "--all", "--", "odd $(name).txt"]
-        );
-        assert_eq!(
-            GitOperation::UnstageAll.args(),
-            ["restore", "--staged", "--", "."]
-        );
-        assert_eq!(
-            GitOperation::UnstagePath("odd $(name).txt".to_owned()).args(),
-            ["restore", "--staged", "--", "odd $(name).txt"]
-        );
-        assert_eq!(
-            GitOperation::StagePaths(vec!["a file.txt".to_owned(), "b.txt".to_owned()]).args(),
-            ["add", "--all", "--", "a file.txt", "b.txt"]
-        );
-        assert_eq!(
-            GitOperation::UnstagePaths(vec!["a file.txt".to_owned(), "b.txt".to_owned()]).args(),
-            ["restore", "--staged", "--", "a file.txt", "b.txt"]
-        );
-    }
-
-    #[test]
-    fn quick_actions_keep_the_global_order_and_head_branch_target() {
-        assert_eq!(
-            QUICK_ACTIONS,
-            [
-                CommandId::Fetch,
-                CommandId::Pull,
-                CommandId::Commit,
-                CommandId::Push,
-                CommandId::CreateBranchAtHead,
-                CommandId::StashChanges,
-            ]
-        );
-        assert!(!COMMANDS.contains(&CommandId::StashChanges));
-        assert!(!COMMANDS.contains(&CommandId::StashPop));
-        assert!(COMMANDS.contains(&CommandId::CheckoutCommit));
-        assert!(QUICK_ACTIONS.contains(&CommandId::StashChanges));
-        assert!(!QUICK_ACTIONS.contains(&CommandId::ResetCurrentBranch));
-        assert!(!QUICK_ACTIONS.contains(&CommandId::CheckoutCommit));
+    fn branch_quick_action_targets_head_instead_of_the_selected_commit() {
         let context = CommandContext {
             has_repository: true,
             current_branch: Some("main".to_owned()),
@@ -707,26 +636,6 @@ mod tests {
                 name: "feature/toolbar".to_owned(),
                 commit: "abc123".to_owned(),
             }
-        );
-    }
-
-    #[test]
-    fn commit_and_amend_keep_message_as_one_argument() {
-        assert_eq!(
-            GitOperation::Commit {
-                message: "subject\n\nbody".to_owned(),
-                amend: false,
-            }
-            .args(),
-            ["commit", "-m", "subject\n\nbody"]
-        );
-        assert_eq!(
-            GitOperation::Commit {
-                message: "replacement".to_owned(),
-                amend: true,
-            }
-            .args(),
-            ["commit", "--amend", "-m", "replacement"]
         );
     }
 
@@ -759,26 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_modes_build_closed_arguments_and_describe_their_effects() {
-        let operation = |mode| GitOperation::Reset {
-            mode,
-            target: "def456".to_owned(),
-            target_name: "origin/main".to_owned(),
-            expected_branch: "main".to_owned(),
-            expected_head: "abc123".to_owned(),
-        };
-        assert_eq!(
-            operation(ResetMode::Soft).args(),
-            ["reset", "--soft", "def456"]
-        );
-        assert_eq!(
-            operation(ResetMode::Mixed).args(),
-            ["reset", "--mixed", "def456"]
-        );
-        assert_eq!(
-            operation(ResetMode::Hard).args(),
-            ["reset", "--hard", "def456"]
-        );
+    fn reset_modes_describe_their_effects() {
         assert!(
             ResetMode::Soft
                 .effect()

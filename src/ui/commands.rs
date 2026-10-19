@@ -1496,6 +1496,39 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_finds_header_actions_and_core_commands() {
+        let mut palette = CommandPalette::new();
+        for (query, command) in [
+            ("refresh", CommandId::Refresh),
+            ("workspace", CommandId::SwitchRepository),
+            ("add remotes", CommandId::AddRemote),
+            ("show remotes", CommandId::ShowRemotes),
+            ("fetch", CommandId::Fetch),
+            ("pull", CommandId::Pull),
+            ("commit", CommandId::Commit),
+            ("push", CommandId::Push),
+            ("branch", CommandId::CreateBranchAtHead),
+            ("checkout", CommandId::CheckoutCommit),
+            ("rebase", CommandId::RebaseHere),
+            ("interactive rebase", CommandId::InteractiveRebase),
+            ("cherry-pick", CommandId::CherryPick),
+            ("revert", CommandId::Revert),
+            ("reset", CommandId::ResetCurrentBranch),
+            ("discard", CommandId::DiscardTrackedChanges),
+            ("copy sha", CommandId::CopySha),
+            ("stash", CommandId::Stash),
+            ("update", CommandId::Update),
+        ] {
+            palette.query.text = query.to_owned();
+            palette.filter();
+            assert!(
+                palette.rows.contains(&command),
+                "missing command for {query}"
+            );
+        }
+    }
+
+    #[test]
     fn command_palette_search_ignores_case_for_typing_and_paste() {
         let mut app = offline_app();
         for query in ["rebase", "REBASE", "ReBaSe"] {

@@ -90,6 +90,14 @@ pub(super) fn temp_registry(name: &str) -> ProjectRegistry {
     ProjectRegistry::load(Some(state.join("projects.json"))).unwrap()
 }
 
+pub(super) fn committed_repo(name: &str) -> PathBuf {
+    let root = temp_repo(name);
+    fs::write(root.join("tracked.txt"), "base\n").unwrap();
+    git(&root, &["add", "tracked.txt"]);
+    git(&root, &["commit", "-m", "Base"]);
+    fs::canonicalize(root).unwrap()
+}
+
 pub(super) fn offline_app() -> App {
     App::load_registered(
         &PathBuf::from("/tmp/project"),

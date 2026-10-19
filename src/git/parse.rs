@@ -433,3 +433,181 @@ pub(super) fn parse_blame(output: &str) -> Result<BlameInfo, String> {
         line,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sums_text_numstat_and_counts_binary_files_without_lines() {
+        let summary = parse_numstat("3\t1\tsrc/main.rs\n-\t-\timage.png\n5\t0\tREADME.md\n");
+        assert_eq!(summary.files, 3);
+        assert_eq!(summary.additions, 8);
+        assert_eq!(summary.deletions, 1);
+    }
+
+    #[test]
+    fn parses_exact_commit_fields() {
+        let raw = "\u{1e}abc\u{1f}p1 p2\u{1f}Ada\u{1f}ada@example.com\u{1f}2026-01-02T03:04:05+00:00\u{1f}HEAD -> refs/heads/main, refs/remotes/origin/main, refs/remotes/origin/HEAD, tag: refs/tags/v1\u{1f}Subject\u{1f}Body\n";
+        let commits = parse_history(raw).unwrap();
+
+        assert_eq!(commits[0].sha, "abc");
+        assert_eq!(commits[0].parents, ["p1", "p2"]);
+        assert_eq!(commits[0].author_time, "2026-01-02T03:04:05+00:00");
+        let two_hours_later =
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_323_045 + 2 * 3_600 + 40);
+        assert_eq!(commits[0].author_relative(two_hours_later), "2 hours ago");
+        assert_eq!(
+            commits[0]
+                .refs
+                .iter()
+                .map(|reference| (reference.name.as_str(), reference.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("HEAD", CommitRefKind::Head),
+                ("main", CommitRefKind::LocalBranch),
+                ("origin/main", CommitRefKind::RemoteBranch),
+                ("origin/HEAD", CommitRefKind::RemoteHead),
+                ("v1", CommitRefKind::Tag),
+            ]
+        );
+        assert_eq!(commits[0].body, "Body");
+    }
+
+    #[test]
+    fn parses_iso_8601_author_times_with_any_offset() {
+        assert_eq!(parse_iso_time("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(parse_iso_time("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_iso_time("2026-01-02T03:04:05+00:00"),
+            Some(1_767_323_045)
+        );
+        assert_eq!(
+            parse_iso_time("2026-01-02T12:04:05+09:00"),
+            Some(1_767_323_045)
+        );
+        assert_eq!(
+            parse_iso_time("2026-01-01T22:04:05-05:00"),
+            Some(1_767_323_045)
+        );
+        assert_eq!(
+            parse_iso_time("2024-02-29T23:59:60.5-0130"),
+            Some(1_709_256_600)
+        );
+        assert_eq!(parse_iso_time("1969-12-31T23:59:59Z"), Some(-1));
+        assert_eq!(parse_iso_time("yesterday"), None);
+        assert_eq!(parse_iso_time("2026-13-01T00:00:00Z"), None);
+        assert_eq!(parse_iso_time("2026-01-01T00:00:00"), None);
+    }
+
+    #[test]
+    fn relative_time_uses_git_wording() {
+        assert_eq!(relative_time(-5), "in the future");
+        assert_eq!(relative_time(0), "0 seconds ago");
+        assert_eq!(relative_time(1), "1 second ago");
+        assert_eq!(relative_time(89), "89 seconds ago");
+        assert_eq!(relative_time(90), "2 minutes ago");
+        assert_eq!(relative_time(25 * 60), "25 minutes ago");
+        assert_eq!(relative_time(90 * 60), "2 hours ago");
+        assert_eq!(relative_time(35 * 3_600), "35 hours ago");
+        assert_eq!(relative_time(36 * 3_600), "2 days ago");
+        assert_eq!(relative_time(13 * 86_400), "13 days ago");
+        assert_eq!(relative_time(14 * 86_400), "2 weeks ago");
+        assert_eq!(relative_time(70 * 86_400), "2 months ago");
+        assert_eq!(relative_time(364 * 86_400), "12 months ago");
+        assert_eq!(relative_time(365 * 86_400), "1 year ago");
+        assert_eq!(relative_time(400 * 86_400), "1 year, 1 month ago");
+        assert_eq!(relative_time(800 * 86_400), "2 years, 2 months ago");
+    }
+
+    #[test]
+    fn parses_status_headers_and_counts_one_entry_per_path() {
+        let tracking = "# branch.oid febe1a484621b165273ccddbdeb60f9141dddc05\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n1 MM N... 100644 100644 100644 7898 422c a.txt\n2 R. N... 100644 100644 100644 7898 7898 R100 new.txt\told.txt\nu UU N... 100644 100644 100644 100644 1111 2222 3333 conflict.txt\n? d/x\n! ignored.txt\n";
+        let report = parse_worktree_report(tracking).unwrap();
+        assert_eq!(report.branch_status.checked_out, "main");
+        assert_eq!(
+            report.branch_status.upstream.as_deref(),
+            Some("origin/main")
+        );
+        assert_eq!(report.branch_status.ahead, 2);
+        assert_eq!(report.branch_status.behind, 1);
+        assert_eq!(report.changed_paths, 4);
+
+        let unfetched = "# branch.oid febe1a484621b165273ccddbdeb60f9141dddc05\n# branch.head main\n# branch.upstream origin/main\n";
+        let report = parse_worktree_report(unfetched).unwrap();
+        assert_eq!(report.branch_status.upstream, None);
+        assert_eq!(report.changed_paths, 0);
+
+        let detached =
+            "# branch.oid febe1a484621b165273ccddbdeb60f9141dddc05\n# branch.head (detached)\n";
+        let report = parse_worktree_report(detached).unwrap();
+        assert_eq!(report.branch_status.checked_out, "Detached febe1a48");
+        assert_eq!(report.branch_status.upstream, None);
+
+        let unborn = "# branch.oid (initial)\n# branch.head main\n? a.txt\n";
+        assert_eq!(
+            parse_worktree_report(unborn)
+                .unwrap()
+                .branch_status
+                .checked_out,
+            "main"
+        );
+        assert_ne!(
+            parse_worktree_report(tracking).unwrap().fingerprint,
+            parse_worktree_report(unfetched).unwrap().fingerprint
+        );
+        assert!(parse_worktree_report("? a.txt\n").is_err());
+    }
+
+    #[test]
+    fn preserves_raw_status_and_uses_destination_path_for_renames_and_copies() {
+        let changes =
+            parse_changes("M\tsrc/main.rs\nR100\told.rs\tnew.rs\nC098\tsrc/main.rs\tsrc/lib.rs\n");
+        assert_eq!(changes[1].status, "R100");
+        assert_eq!(changes[1].path, "new.rs");
+        assert_eq!(changes[2].status, "C098");
+        assert_eq!(changes[2].path, "src/lib.rs");
+    }
+
+    #[test]
+    fn parses_line_porcelain_blame() {
+        let raw = "abc123 4 7 1\nauthor Ada Lovelace\nauthor-mail <ada@example.com>\nauthor-time 1700000000\nsummary Explain engine\nfilename src/lib.rs\n\tlet engine = true;\n";
+        let blame = parse_blame(raw).unwrap();
+        assert_eq!(blame.sha, "abc123");
+        assert_eq!(blame.author, "Ada Lovelace");
+        assert_eq!(blame.author_email, "ada@example.com");
+        assert_eq!(blame.line, 7);
+        assert_eq!(blame.summary, "Explain engine");
+    }
+
+    #[test]
+    fn splits_line_history_into_commits_with_their_patches() {
+        let raw = "\u{1e}aaa\u{1f}Ada\u{1f}1700000000\u{1f}Second\n\ndiff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-one\n+two\n\u{1e}bbb\u{1f}Bob\u{1f}1600000000\u{1f}First\n\ndiff --git a/a.rs b/a.rs\n@@ -0,0 +1 @@\n+one\n";
+        let history = parse_line_history(raw).unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|commit| (
+                    commit.sha.as_str(),
+                    commit.author.as_str(),
+                    commit.author_time
+                ))
+                .collect::<Vec<_>>(),
+            [("aaa", "Ada", 1_700_000_000), ("bbb", "Bob", 1_600_000_000)]
+        );
+        assert!(history[0].patch.starts_with("diff --git"));
+        assert!(history[0].patch.ends_with("+two\n"));
+        assert!(parse_line_history("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parses_one_line_porcelain_record_per_line() {
+        let raw = "abc123 4 7 2\nauthor Ada\nsummary First\nfilename a.rs\n\tone\nabc123 5 8\nauthor Ada\nsummary First\nfilename a.rs\n\ttwo\n";
+        let blame = parse_blame_range(raw).unwrap();
+        assert_eq!(
+            blame.iter().map(|blame| blame.line).collect::<Vec<_>>(),
+            [7, 8]
+        );
+        assert!(parse_blame_range("").unwrap().is_empty());
+    }
+}

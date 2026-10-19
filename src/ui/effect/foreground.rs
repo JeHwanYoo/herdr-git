@@ -615,3 +615,32 @@ fn read_file_preview(
         })
         .ok_or_else(|| GIT_READ_CANCELLED.to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::git::git_processes_started;
+    use crate::ui::test_support::committed_repo;
+
+    #[test]
+    fn branch_targets_use_one_git_read_at_the_known_root() {
+        let root = committed_repo("branch-read-count");
+        let before = git_processes_started();
+        let result = run_foreground_job(
+            ForegroundRequest::BranchTargets {
+                id: RequestId::FIRST,
+                path: root.clone(),
+                command: CommandId::CheckoutCommit,
+            },
+            &SharedSyntax::default(),
+            &ReadCancellations::default(),
+        );
+        assert!(
+            matches!(result, ForegroundResult::BranchTargets { result: Ok(ref targets), .. } if !targets.is_empty())
+        );
+        assert_eq!(git_processes_started() - before, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
