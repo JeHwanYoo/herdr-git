@@ -6,7 +6,7 @@ A Git client for Herdr.
 
 ## Install
 
-Requires Herdr 0.9.0 or later on macOS or Linux.
+Requires Herdr 0.9.2 or later on macOS or Linux.
 
 ```sh
 herdr plugin install JeHwanYoo/herdr-git
@@ -47,25 +47,23 @@ Press `Ctrl+b`, then `u` to open the Git sidebar on the right.
 
 ## Graph rendering
 
-When Herdr pane graphics are on, the Graph draws antialiased curves and thin rules between commits. Herdr turns them on by default in terminals that support the Kitty graphics protocol. Otherwise the Graph uses box-drawing characters. To turn pane graphics off, add this to `~/.config/herdr/config.toml` and restart Herdr:
+How the Graph is drawn depends on the `kitty_graphics` setting under `[terminal]` in `~/.config/herdr/config.toml`. The Herdr default is `true`.
 
-```toml
-[terminal]
-kitty_graphics = false
-```
+| `kitty_graphics` | Graph |
+| --- | --- |
+| `true` (default) | Antialiased curves and thin rules between commits, in terminals that support the Kitty graphics protocol |
+| `false` | Box-drawing characters |
+
+Herdr Git also has a Kitty graphics switch in the Settings tab. It changes the Graph in Herdr Git only, and it shows whether graphics are active in the current pane.
 
 <table>
   <tr>
-    <th width="50%"><code>kitty_graphics = true</code></th>
+    <th width="50%"><code>kitty_graphics = true</code> (default)</th>
     <th width="50%"><code>kitty_graphics = false</code></th>
   </tr>
   <tr>
     <td><img src="assets/kitty_graphics_true.png" alt="Graph with Kitty graphics enabled" width="100%"></td>
     <td><img src="assets/kitty_graphics_false.png" alt="Graph with Kitty graphics disabled" width="100%"></td>
-  </tr>
-  <tr>
-    <td>Antialiased curves</td>
-    <td>Box-drawing characters</td>
   </tr>
 </table>
 

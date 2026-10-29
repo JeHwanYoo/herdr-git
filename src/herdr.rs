@@ -5,12 +5,10 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
-mod graphics;
 mod preferences;
 mod sidebar;
 mod update;
 
-pub use graphics::{GraphicsPlacement, GraphicsSurface};
 pub(crate) use preferences::{pane_graphics_enabled, save_pane_graphics_enabled};
 pub(crate) use update::{install_update, latest_version, save_skipped_version, skipped_version};
 
