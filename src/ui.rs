@@ -83,6 +83,7 @@ enum PendingClipboard {
 
 pub fn run(path: &Path) -> Result<(), String> {
     let mut terminal = start_terminal()?;
+    let kitty_graphics = graph::kitty_graphics_supported();
     let path = path.to_owned();
 
     let result = (|| {
@@ -120,7 +121,7 @@ pub fn run(path: &Path) -> Result<(), String> {
                 return Ok(());
             }
         };
-        app.curves = CurveLayer::connect(crate::herdr::pane_graphics_enabled());
+        app.curves = CurveLayer::connect(crate::herdr::pane_graphics_enabled(), kitty_graphics);
         app.check_for_update();
         let mut dirty = true;
         loop {

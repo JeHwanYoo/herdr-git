@@ -2,13 +2,13 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tiny_skia::{BlendMode, FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
+use super::kitty::{GraphicsPlacement, GraphicsSurface};
 use super::layout::{GraphLayout, GraphViewport, ROW_HEIGHT, lane_cell};
-use crate::herdr::{GraphicsPlacement, GraphicsSurface};
 use crate::ui::theme;
 
 const MAX_PIXELS: u64 = 8_000_000;
-const CURVES_LAYER: &str = "curves";
-const RULES_LAYER: &str = "rules";
+const CURVES_IMAGE: u32 = 4_801;
+const RULES_IMAGE: u32 = 4_802;
 
 type Rgb = (u8, u8, u8);
 
@@ -21,6 +21,7 @@ pub(in crate::ui) struct RuleViewport {
 
 pub(in crate::ui) struct CurveLayer {
     enabled: bool,
+    supported: bool,
     curves: GraphicsLayer<(u64, GraphViewport)>,
     rules: GraphicsLayer<RuleViewport>,
 }
@@ -29,17 +30,20 @@ impl CurveLayer {
     pub(in crate::ui) fn disabled() -> Self {
         Self {
             enabled: true,
+            supported: false,
             curves: GraphicsLayer::disabled(),
             rules: GraphicsLayer::disabled(),
         }
     }
 
-    pub(in crate::ui) fn connect(enabled: bool) -> Self {
-        Self {
+    pub(in crate::ui) fn connect(enabled: bool, supported: bool) -> Self {
+        let mut layer = Self {
             enabled,
-            curves: GraphicsLayer::connect(CURVES_LAYER),
-            rules: GraphicsLayer::connect(RULES_LAYER),
-        }
+            supported,
+            ..Self::disabled()
+        };
+        layer.reconnect();
+        layer
     }
 
     pub(in crate::ui) fn enabled(&self) -> bool {
@@ -63,8 +67,11 @@ impl CurveLayer {
     }
 
     pub(in crate::ui) fn reconnect(&mut self) {
-        self.curves.reconnect(CURVES_LAYER);
-        self.rules.reconnect(RULES_LAYER);
+        if !self.supported {
+            return;
+        }
+        self.curves.reconnect(CURVES_IMAGE);
+        self.rules.reconnect(RULES_IMAGE);
     }
 
     pub(super) fn present(
@@ -100,25 +107,18 @@ impl<F: PartialEq> GraphicsLayer<F> {
         }
     }
 
-    fn connect(layer: &'static str) -> Self {
-        Self {
-            surface: GraphicsSurface::connect(layer).ok(),
-            painted: None,
-        }
-    }
-
     fn available(&self) -> bool {
         self.surface.is_some()
     }
 
-    fn reconnect(&mut self, layer: &'static str) {
+    fn reconnect(&mut self, image: u32) {
         self.painted = None;
         let refreshed = self
             .surface
             .as_mut()
             .is_some_and(|surface| surface.refresh_cell_size().is_ok());
         if !refreshed {
-            self.surface = GraphicsSurface::connect(layer).ok();
+            self.surface = GraphicsSurface::connect(image).ok();
         }
     }
 
@@ -148,7 +148,6 @@ impl<F: PartialEq> GraphicsLayer<F> {
             let png = pixmap.encode_png().map_err(|error| error.to_string())?;
             surface.show_png(
                 &png,
-                (pixmap.width(), pixmap.height()),
                 GraphicsPlacement {
                     column: area.x,
                     row: area.y,

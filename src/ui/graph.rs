@@ -30,9 +30,11 @@ use layout::{GraphLayout, GraphViewport, LayoutNode, ROW_HEIGHT};
 
 pub(super) use curves::CurveLayer;
 use curves::RuleViewport;
+pub(super) use kitty::kitty_graphics_supported;
 
 mod curves;
 mod glyphs;
+mod kitty;
 mod layout;
 
 pub(super) const COMMIT_COMMANDS: [CommandId; 7] = [

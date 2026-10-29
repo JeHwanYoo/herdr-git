@@ -171,7 +171,7 @@ impl App {
                     "Kitty graphics",
                     control,
                     status,
-                    "Antialiased graph curves and commit rules. Needs kitty_graphics = true under [terminal] in ~/.config/herdr/config.toml".to_owned(),
+                    "Antialiased graph curves and commit rules. Uses kitty_graphics under [terminal] in ~/.config/herdr/config.toml (Herdr default: true)".to_owned(),
                 )
             }
             SettingsRow::Versions => {
@@ -257,7 +257,7 @@ mod tests {
         let buffer = render(&mut app, 160, 30);
         assert!(find_text(&buffer, " On  ").is_some());
         assert!(find_text(&buffer, "Unavailable in this pane").is_some());
-        assert!(find_text(&buffer, "kitty_graphics = true under [terminal]").is_some());
+        assert!(find_text(&buffer, "kitty_graphics under [terminal]").is_some());
 
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.overlay, Overlay::None));

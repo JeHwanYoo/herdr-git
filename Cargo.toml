@@ -8,6 +8,7 @@ description = "Git history, diffs, blame, and repository operations for Herdr"
 repository = "https://github.com/JeHwanYoo/herdr-git"
 
 [dependencies]
+base64 = "0.22"
 crossterm = "0.28"
 grep = "0.4"
 ignore = "0.4"
