@@ -118,6 +118,7 @@ impl App {
                             self.update.status = UpdateStatus::Available(tag);
                         }
                         UpdateResult::Checked(Ok(None)) => {
+                            self.update.status = UpdateStatus::Current;
                             self.update.checked = Some(CheckOutcome::UpToDate);
                         }
                         UpdateResult::Checked(Err(error)) => {
@@ -134,8 +135,12 @@ impl App {
                         self.update_failed(
                             "Update worker stopped before installation completed".into(),
                         );
-                        return true;
+                    } else {
+                        self.update.checked = Some(CheckOutcome::Failed(
+                            "Update worker stopped before check completed".into(),
+                        ));
                     }
+                    return true;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -427,6 +432,59 @@ mod tests {
         palette.query.text = "update".into();
         palette.filter();
         assert_eq!(palette.rows, vec![CommandId::Update]);
+    }
+
+    #[test]
+    fn successful_rechecks_clear_withdrawn_update_offers() {
+        let mut app = offline_app();
+        let (tx, rx) = mpsc::channel();
+        app.update.pending = Some(rx);
+        tx.send(UpdateResult::Checked(Ok(Some("v1.0.0".into()))))
+            .unwrap();
+        assert!(app.poll_update());
+        assert!(app.update.enabled());
+
+        let (tx, rx) = mpsc::channel();
+        app.update.pending = Some(rx);
+        tx.send(UpdateResult::Checked(Ok(None))).unwrap();
+        assert!(app.poll_update());
+        assert_eq!(app.update.status, UpdateStatus::Current);
+        assert_eq!(app.update.checked, Some(super::CheckOutcome::UpToDate));
+        assert!(!app.update.enabled());
+        let buffer = render(&mut app, 120, 16);
+        assert!(find_text_in_row(&buffer, app.update.area.y, "Update available").is_none());
+    }
+
+    #[test]
+    fn failed_rechecks_preserve_known_update_offers() {
+        let mut app = offline_app();
+        app.update.status = UpdateStatus::Available("v1.0.0".into());
+        let (tx, rx) = mpsc::channel();
+        app.update.pending = Some(rx);
+        tx.send(UpdateResult::Checked(Err("offline".into())))
+            .unwrap();
+        assert!(app.poll_update());
+        assert_eq!(app.update.status, UpdateStatus::Available("v1.0.0".into()));
+        assert!(app.update.enabled());
+        assert_eq!(
+            app.update.checked,
+            Some(super::CheckOutcome::Failed("offline".into()))
+        );
+    }
+
+    #[test]
+    fn disconnected_checks_report_failure_and_request_a_redraw() {
+        let mut app = offline_app();
+        let (tx, rx) = mpsc::channel();
+        app.update.pending = Some(rx);
+        drop(tx);
+        assert!(app.poll_update());
+        assert!(!app.update.checking());
+        assert!(matches!(
+            app.update.checked,
+            Some(super::CheckOutcome::Failed(_))
+        ));
+        assert!(app.shell.error.is_none());
     }
 
     #[test]
