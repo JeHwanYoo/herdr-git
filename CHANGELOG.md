@@ -1,5 +1,6 @@
 # Changelog
 
+- [0.6.1](changelogs/0.6.1.md)
 - [0.6.0](changelogs/0.6.0.md)
 - [0.5.0](changelogs/0.5.0.md)
 - [0.4.1](changelogs/0.4.1.md)
