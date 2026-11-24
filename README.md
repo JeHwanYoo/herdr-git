@@ -1,5 +1,8 @@
 # Herdr Git
 
+> **Herdr Git has moved to [herdr-git-mods](https://github.com/JeHwanYoo/herdr-git-mods).**
+> The current version runs as a mod for Herdr App. See the new repository for installation instructions.
+
 ![Herdr Git](assets/app.png)
 
 A Git client for Herdr.
